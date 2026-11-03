@@ -13,7 +13,7 @@ interface MagneticButtonProps extends Omit<React.ButtonHTMLAttributes<HTMLButton
 const variants = {
   coral: "bg-coral text-blue-ink hover:bg-[#f39469] shadow-[0_10px_24px_-12px_rgba(217,105,58,0.8)]",
   blue: "bg-blue text-ivory hover:bg-blue-deep shadow-[0_10px_24px_-12px_rgba(23,71,109,0.8)]",
-  ghost: "bg-transparent text-blue border border-blue/40 hover:border-blue",
+  ghost: "bg-transparent text-blue border-[1.5px] border-blue/75 hover:border-blue hover:bg-blue/5",
 };
 
 export function MagneticButton({ children, range = 60, strength = 0.3, className = "", variant = "coral", ...rest }: MagneticButtonProps) {

@@ -10,9 +10,9 @@ export function Wordmark({ className = "" }: { className?: string }) {
 
 export function SiteFooter() {
   return (
-    <footer className="mt-24 border-t border-blue/15">
+    <footer className="mt-24 border-t border-blue/20">
       <div className="mx-auto max-w-6xl px-5 py-10 grid gap-6 md:grid-cols-[1fr_auto] text-sm text-muted">
-        <div className="space-y-2 max-w-xl">
+        <div className="space-y-3 max-w-xl">
           <p>
             Womenswear visual references from{" "}
             <a className="underline text-blue" href="https://github.com/paipiange/nvzhuang" target="_blank" rel="noreferrer">
@@ -34,9 +34,9 @@ export function SiteFooter() {
           </p>
           <p>Outfit Maker is not affiliated with Pinterest. &ldquo;Pinterest inspo&rdquo; links open a public Pinterest search.</p>
         </div>
-        <nav className="flex gap-5 items-start nav-label">
-          <Link href="/privacy" className="hover:text-blue">Privacy</Link>
-          <Link href="/terms" className="hover:text-blue">Terms</Link>
+        <nav className="flex gap-6 items-start text-sm font-medium text-blue">
+          <Link href="/privacy" className="underline underline-offset-4 hover:text-coral-deep py-1">Privacy</Link>
+          <Link href="/terms" className="underline underline-offset-4 hover:text-coral-deep py-1">Terms</Link>
         </nav>
       </div>
     </footer>

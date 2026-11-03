@@ -3,7 +3,7 @@ import { Wordmark, SiteFooter } from "@/components/brand";
 
 export default function PublicLayout({ children }: { children: React.ReactNode }) {
   return (
-    <>
+    <div className="min-h-dvh flex flex-col">
       <header className="mx-auto max-w-6xl px-5 h-16 flex items-center justify-between">
         <Wordmark />
         <nav className="flex items-center gap-6 nav-label text-blue">
@@ -12,8 +12,8 @@ export default function PublicLayout({ children }: { children: React.ReactNode }
           <Link href="/login" className="hover:text-coral-deep">Sign in</Link>
         </nav>
       </header>
-      {children}
+      <div className="flex-1">{children}</div>
       <SiteFooter />
-    </>
+    </div>
   );
 }

@@ -11,7 +11,7 @@ export default function NotFound() {
         <p className="mt-2 text-muted">The link may be old, or the outfit was deleted.</p>
         <div className="mt-8 flex gap-4">
           <Link href="/style" className="rounded-full bg-coral text-blue-ink font-semibold px-6 h-12 inline-flex items-center hover:bg-[#f39469]">Style me</Link>
-          <Link href="/" className="rounded-full border border-blue/40 text-blue font-semibold px-6 h-12 inline-flex items-center hover:border-blue">Home</Link>
+          <Link href="/" className="rounded-full border-[1.5px] border-blue/75 text-blue font-semibold px-6 h-12 inline-flex items-center hover:border-blue">Home</Link>
         </div>
       </div>
     </main>

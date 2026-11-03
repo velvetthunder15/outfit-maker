@@ -109,7 +109,7 @@ export default function Landing() {
 
       <section className="mx-auto max-w-6xl px-5 mt-28">
         <div className="paper-blue rounded-[28px] px-6 py-14 md:px-14 text-ivory grid gap-8 md:grid-cols-[1fr_auto] items-center">
-          <h2 className="display text-[clamp(2.2rem,7vw,4.25rem)] text-ivory">What are you wearing tonight?</h2>
+          <h2 className="display !leading-[0.98] text-[clamp(2.2rem,7vw,4.25rem)] text-ivory">What are you wearing tonight?</h2>
           <GoogleButton label="Style me" />
         </div>
       </section>

@@ -109,7 +109,7 @@ a {
 .field {
   width: 100%;
   background: var(--color-paper);
-  border: 1px solid color-mix(in oklab, var(--color-blue) 22%, transparent);
+  border: 1px solid color-mix(in oklab, var(--color-blue) 45%, transparent);
   border-radius: 14px;
   padding: 0.8rem 1rem;
   font-size: 1rem;
@@ -117,7 +117,7 @@ a {
   transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
 }
 .field::placeholder {
-  color: color-mix(in oklab, var(--color-ink) 52%, transparent);
+  color: color-mix(in oklab, var(--color-ink) 62%, transparent);
 }
 .field:focus {
   outline: none;
