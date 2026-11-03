@@ -1,5 +1,5 @@
 "use client";
-import { motion } from "motion/react";
+import { m } from "motion/react";
 import { Cloud, CloudRain, CloudSnow, CloudSun, Moon, Sun, Wind, Droplets, CloudLightning, CloudFog } from "lucide-react";
 import type { Weather } from "@/lib/types";
 import { ShimmerLine } from "./amicro/shimmer-line";
@@ -28,7 +28,7 @@ export function WeatherCard({ w, loading, compact = false }: { w: Weather | null
   const ok = w.source === "forecast";
   const t = w.at ? new Date(w.at) : null;
   return (
-    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ ease: [0.16, 1, 0.3, 1], duration: 0.5 }} className={`paper-blue rounded-[22px] text-ivory ${compact ? "p-4" : "p-5"}`}>
+    <m.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ ease: [0.16, 1, 0.3, 1], duration: 0.5 }} className={`paper-blue rounded-[22px] text-ivory ${compact ? "p-4" : "p-5"}`}>
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <p className="nav-label text-ivory/80 truncate">{w.place || "Destination"}</p>
@@ -54,6 +54,6 @@ export function WeatherCard({ w, loading, compact = false }: { w: Weather | null
       ) : (
         <p className="mt-3 text-sm text-ivory/85">{w.summary}. We&apos;ll style for the usual climate there.</p>
       )}
-    </motion.div>
+    </m.div>
   );
 }

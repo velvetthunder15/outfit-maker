@@ -1,6 +1,5 @@
 "use client";
 import { useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import { MagneticButton } from "@/components/amicro/magnetic-button";
 import { BounceDots } from "@/components/amicro/bounce-dots";
 
@@ -13,6 +12,7 @@ export function MagicLinkForm({ next }: { next: string }) {
       onSubmit={async (e) => {
         e.preventDefault();
         setState("sending");
+        const { createClient } = await import("@/lib/supabase/client");
         const { error } = await createClient().auth.signInWithOtp({
           email,
           options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}` },

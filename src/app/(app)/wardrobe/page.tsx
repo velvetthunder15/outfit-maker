@@ -12,6 +12,9 @@ export default async function WardrobePage({ searchParams }: { searchParams: Pro
   if (!user) redirect("/login");
   const sp = await searchParams;
   const { data } = await supabase.from("om_wardrobe_items").select("*").eq("user_id", user.id).order("created_at", { ascending: false }).limit(WARDROBE_CAP);
-  const items = await withSignedUrls(supabase, (data ?? []) as WardrobeItem[]);
+  // Sign thumbnails only (full photo is signed on demand in the edit sheet): half the signing work and payload.
+  const rows = (data ?? []) as WardrobeItem[];
+  const signed = await withSignedUrls(supabase, rows.map((i) => ({ ...i, image_path: i.thumb_path ? null : i.image_path })));
+  const items = signed.map((s, k) => ({ ...s, image_path: rows[k].image_path, image_url: s.thumb_path ? null : s.image_url }));
   return <WardrobeClient userId={user.id} initialItems={items} welcome={sp.welcome === "1"} aiReady={Boolean(process.env.GEMINI_API_KEY)} />;
 }

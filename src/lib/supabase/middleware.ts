@@ -33,9 +33,10 @@ export async function updateSession(request: NextRequest) {
     },
   });
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // Local JWT verification (ES256 via cached JWKS) instead of a getUser() network call on every request.
+  // getClaims() still refreshes an expired session through getSession(), and writes the new cookies above.
+  const { data } = await supabase.auth.getClaims();
+  const user = data?.claims?.sub ? { id: data.claims.sub } : null;
 
   if (!user && isProtected) {
     const to = request.nextUrl.clone();

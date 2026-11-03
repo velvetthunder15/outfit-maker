@@ -9,11 +9,14 @@ export const metadata: Metadata = { title: "Style me" };
 export default async function StylePage() {
   const { supabase, user } = await requireUser();
   if (!user) redirect("/login");
-  const profile = await getProfile(supabase, user.id, user.user_metadata?.full_name);
-  if (profile && !profile.onboarded) redirect("/onboarding");
-  const { count } = await supabase.from("om_wardrobe_items").select("id", { count: "exact", head: true }).eq("user_id", user.id).not("category", "is", null);
   const today = new Date().toISOString().slice(0, 10);
-  const { data: usage } = await supabase.from("om_ai_usage").select("count").eq("user_id", user.id).eq("kind", "outfit").eq("day", today).maybeSingle();
+  // One parallel round trip instead of three sequential ones.
+  const [profile, { count }, { data: usage }] = await Promise.all([
+    getProfile(supabase, user.id, user.user_metadata?.full_name),
+    supabase.from("om_wardrobe_items").select("id", { count: "exact", head: true }).eq("user_id", user.id).not("category", "is", null),
+    supabase.from("om_ai_usage").select("count").eq("user_id", user.id).eq("kind", "outfit").eq("day", today).maybeSingle(),
+  ]);
+  if (profile && !profile.onboarded) redirect("/onboarding");
   return (
     <StyleClient
       name={profile?.display_name?.split(" ")[0] ?? null}

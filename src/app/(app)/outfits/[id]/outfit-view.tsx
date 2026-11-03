@@ -2,7 +2,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, m } from "motion/react";
 import { Bookmark, BookmarkCheck, ThumbsDown, ThumbsUp, ExternalLink, RefreshCw, Trash2, Camera, Plus, X } from "lucide-react";
 import type { OutfitResult, WardrobeItem, Weather } from "@/lib/types";
 import type { RefImage } from "@/lib/refs";
@@ -28,13 +28,17 @@ export function OutfitView({ outfit, result, items, weather, rating: initialRati
   const main = pieces.filter((p) => !["jewellery", "watch", "bag", "belt", "eyewear", "hat", "scarf"].includes(p.slot));
   const acc = pieces.filter((p) => ["jewellery", "watch", "bag", "belt", "eyewear", "hat", "scarf"].includes(p.slot));
 
-  const patch = (body: object) => fetch(`/api/outfits/${outfit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  // After a save/rating, refresh so the client router cache (staleTimes) doesn't show a stale Saved list.
+  const patch = (body: object) =>
+    fetch(`/api/outfits/${outfit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => {
+      router.refresh();
+      return r;
+    });
 
   return (
     <div className="pt-8">
       <FadeUp>
-        <p className="nav-label text-coral-deep">{outfit.mood} · {outfit.destination?.name}</p>
-        <h1 className="mt-3 display-condensed text-blue text-[clamp(2.6rem,9vw,5.5rem)] max-w-4xl">{result.title}</h1>
+        <h1 className="display-condensed text-blue text-[clamp(2.6rem,9vw,5.5rem)] max-w-4xl">{result.title}</h1>
         <p className="mt-3 text-lg max-w-2xl">{result.vibe}</p>
         <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
           <span className="rounded-full bg-blue text-ivory px-3 py-1">{result.aesthetic}</span>
@@ -45,17 +49,17 @@ export function OutfitView({ outfit, result, items, weather, rating: initialRati
 
       {/* Actions */}
       <div className="mt-6 flex flex-wrap items-center gap-2">
-        <motion.button whileTap={{ scale: 0.92 }} onClick={() => { setSaved(!saved); patch({ is_saved: !saved }); }} className={`h-11 px-5 rounded-full inline-flex items-center gap-2 text-sm font-semibold transition-colors ${saved ? "bg-blue text-ivory" : "border border-blue/30 text-blue hover:border-blue"}`}>
+        <m.button whileTap={{ scale: 0.92 }} onClick={() => { setSaved(!saved); patch({ is_saved: !saved }); }} className={`h-11 px-5 rounded-full inline-flex items-center gap-2 text-sm font-semibold transition-colors ${saved ? "bg-blue text-ivory" : "border border-blue/30 text-blue hover:border-blue"}`}>
           {saved ? <BookmarkCheck size={17} /> : <Bookmark size={17} />} {saved ? "Saved" : "Save"}
-        </motion.button>
+        </m.button>
         <div className="inline-flex rounded-full border border-blue/30 overflow-hidden" role="group" aria-label="Rate this outfit">
           {([1, -1] as const).map((v) => {
             const on = rating === v;
             const I = v === 1 ? ThumbsUp : ThumbsDown;
             return (
-              <motion.button key={v} whileTap={{ scale: 0.85 }} aria-pressed={on} aria-label={v === 1 ? "Love it" : "Not for me"} onClick={() => { const nv = on ? 0 : v; setRating(nv); patch({ rating: nv }); }} className={`h-11 w-12 grid place-items-center transition-colors ${on ? (v === 1 ? "bg-coral text-blue-ink" : "bg-blue text-ivory") : "text-blue hover:bg-blue/8"}`}>
-                <motion.span animate={on ? { rotate: [0, -14, 10, 0], scale: [1, 1.25, 1] } : {}} transition={{ duration: 0.45 }}><I size={17} /></motion.span>
-              </motion.button>
+              <m.button key={v} whileTap={{ scale: 0.85 }} aria-pressed={on} aria-label={v === 1 ? "Love it" : "Not for me"} onClick={() => { const nv = on ? 0 : v; setRating(nv); patch({ rating: nv }); }} className={`h-11 w-12 grid place-items-center transition-colors ${on ? (v === 1 ? "bg-coral text-blue-ink" : "bg-blue text-ivory") : "text-blue hover:bg-blue/8"}`}>
+                <m.span animate={on ? { rotate: [0, -14, 10, 0], scale: [1, 1.25, 1] } : {}} transition={{ duration: 0.45 }}><I size={17} /></m.span>
+              </m.button>
             );
           })}
         </div>
@@ -67,7 +71,7 @@ export function OutfitView({ outfit, result, items, weather, rating: initialRati
           <Trash2 size={16} /> {confirmDel ? "Tap to delete" : ""}
         </button>
       </div>
-      <AnimatePresence>{rating !== 0 && <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="mt-2 text-sm text-muted">Got it. Future outfits will lean {rating === 1 ? "toward" : "away from"} this.</motion.p>}</AnimatePresence>
+      <AnimatePresence>{rating !== 0 && <m.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="mt-2 text-sm text-muted">Got it. Future outfits will lean {rating === 1 ? "toward" : "away from"} this.</m.p>}</AnimatePresence>
 
       <div className="mt-10 grid gap-10 lg:grid-cols-[1fr_340px]">
         <div>
@@ -90,8 +94,7 @@ export function OutfitView({ outfit, result, items, weather, rating: initialRati
             <div>
               <h2 className="text-lg font-semibold text-blue">Why it works</h2>
               <p className="mt-2 leading-relaxed">{result.why_it_works}</p>
-              <h3 className="mt-6 text-lg font-semibold text-blue">Colour story</h3>
-              <div className="mt-3 flex h-12 rounded-xl overflow-hidden">
+              <div className="mt-6 flex h-12 rounded-xl overflow-hidden">
                 {result.palette.map((c) => <span key={c} className="flex-1" style={{ background: c }} title={c} />)}
               </div>
               <p className="mt-3 text-muted leading-relaxed">{result.color_story}</p>
@@ -116,7 +119,7 @@ export function OutfitView({ outfit, result, items, weather, rating: initialRati
                   return (
                     <li key={i} className="flex items-center gap-3 rounded-2xl bg-paper border border-blue/10 p-3">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      {it?.thumb_url ? <img src={it.thumb_url} alt="" className="h-16 w-14 rounded-xl object-cover" /> : <span className="h-16 w-14 rounded-xl bg-ivory-deep" />}
+                      {it?.thumb_url ? <img decoding="async" src={it.thumb_url} alt="" className="h-16 w-14 rounded-xl object-cover" /> : <span className="h-16 w-14 rounded-xl bg-ivory-deep" />}
                       <div className="min-w-0"><p className="nav-label text-coral-deep">{a.slot}</p><p className="text-sm">{a.description}</p></div>
                     </li>
                   );
@@ -163,7 +166,6 @@ export function OutfitView({ outfit, result, items, weather, rating: initialRati
           {result.weather_note && <p className="text-sm leading-relaxed px-1">{result.weather_note}</p>}
           <div className="rounded-[22px] bg-paper border border-blue/10 p-5 space-y-3">
             <p className="font-medium text-blue">Shooting a fit pic?</p>
-            <p className="text-sm text-muted">Browse pose ideas that suit this outfit.</p>
             <a href="https://ai-pose-gallery.pages.dev/" target="_blank" rel="noreferrer" className="nav-label text-blue inline-flex items-center gap-1 hover:text-coral-deep">Pose ideas <ExternalLink size={13} /></a>
           </div>
           {aiReady && (
@@ -182,12 +184,12 @@ export function OutfitView({ outfit, result, items, weather, rating: initialRati
 
 function PieceCard({ p, item, i, big = false }: { p: OutfitResult["pieces"][number]; item?: WardrobeItem; i: number; big?: boolean }) {
   return (
-    <motion.li initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 * i, duration: 0.5, ease: [0.16, 1, 0.3, 1] }}>
+    <m.li initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(0.03 * i, 0.15), duration: 0.24, ease: [0.16, 1, 0.3, 1] }}>
       <TiltCard maxTilt={big ? 6 : 4}>
         <div className={`relative overflow-hidden rounded-2xl ${item?.image_url ? "bg-paper" : "paper-blue"} border border-blue/10 aspect-[4/5]`}>
           {item?.image_url ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={item.image_url} alt={item.name ?? p.description} className="h-full w-full object-cover" />
+            <img decoding="async" src={item.image_url} alt={item.name ?? p.description} className="h-full w-full object-cover" />
           ) : (
             <div className="h-full w-full p-4 flex items-end text-ivory"><p className={`${big ? "text-lg" : "text-sm"} font-semibold leading-snug`}>{p.description}</p></div>
           )}
@@ -196,7 +198,7 @@ function PieceCard({ p, item, i, big = false }: { p: OutfitResult["pieces"][numb
       </TiltCard>
       {item && <p className={`mt-2 font-medium ${big ? "" : "text-sm"} truncate`}>{item.name ?? p.description}</p>}
       {big && <p className="mt-1 text-sm text-muted leading-snug">{p.reason}</p>}
-    </motion.li>
+    </m.li>
   );
 }
 
@@ -227,12 +229,12 @@ function TryOn({ outfitId, onClose }: { outfitId: string; onClose: () => void })
   }
   return (
     <>
-      <motion.div className="fixed inset-0 z-40 bg-blue-ink/50" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} />
-      <motion.div role="dialog" aria-modal="true" aria-label="Virtual try-on" className="fixed z-50 inset-x-4 top-[8dvh] mx-auto max-w-md rounded-[28px] bg-ivory p-6" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}>
+      <m.div className="fixed inset-0 z-40 bg-blue-ink/50" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} />
+      <m.div role="dialog" aria-modal="true" aria-label="Virtual try-on" className="fixed z-50 inset-x-4 top-[8dvh] mx-auto max-w-md rounded-[28px] bg-ivory p-6" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}>
         <div className="flex items-center justify-between"><h2 className="text-xl font-semibold text-blue">Virtual try-on</h2><button onClick={onClose} aria-label="Close" className="h-10 w-10 grid place-items-center rounded-full hover:bg-blue/10"><X size={20} /></button></div>
         {img ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={img} alt="You wearing the outfit (AI generated)" className="mt-4 w-full rounded-2xl" />
+          <img decoding="async" src={img} alt="You wearing the outfit (AI generated)" className="mt-4 w-full rounded-2xl" />
         ) : (
           <label className="mt-4 flex flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-blue/25 p-10 cursor-pointer hover:border-blue/50">
             {busy ? <><BounceDots /><span className="text-sm text-blue">Dressing you up, about 15 seconds</span></> : <><Camera className="text-blue" /><span className="text-sm text-muted text-center">Full-length photo, good light, plain background works best</span><span className="rounded-full bg-coral text-blue-ink font-semibold px-5 h-10 inline-flex items-center">Choose photo</span></>}
@@ -242,7 +244,7 @@ function TryOn({ outfitId, onClose }: { outfitId: string; onClose: () => void })
         {err && <p className="mt-3 text-sm text-coral-deep" role="alert">{err}</p>}
         <p className="mt-3 text-xs text-muted">AI-generated preview. 5 per day.</p>
         {img && <div className="mt-4"><MagneticButton variant="ghost" onClick={() => setImg(null)}>Try another photo</MagneticButton></div>}
-      </motion.div>
+      </m.div>
     </>
   );
 }

@@ -1,17 +1,16 @@
-"use client";
-// Amicro: entrance/fade-up (MIT)
+// Amicro: entrance/fade-up (MIT) — perf rewrite: pure CSS keyframe (compositor-only opacity + transform),
+// server-renderable, no JS/hydration needed, honours prefers-reduced-motion via globals.css.
 import React from "react";
-import { motion } from "motion/react";
 
-export function FadeUp({ children, duration = 0.6, delay = 0, yOffset = 16, className = "" }: { children: React.ReactNode; duration?: number; delay?: number; yOffset?: number; className?: string }) {
+export function FadeUp({
+  children, duration = 0.6, delay = 0, yOffset = 16, className = "", fade = true,
+}: { children: React.ReactNode; duration?: number; delay?: number; yOffset?: number; className?: string; fade?: boolean }) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: yOffset }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration, delay, ease: [0.16, 1, 0.3, 1] }}
-      className={className}
+    <div
+      className={`${fade ? "om-fade-up" : "om-rise"} ${className}`}
+      style={{ "--om-d": `${duration}s`, "--om-delay": `${delay}s`, "--om-y": `${yOffset}px` } as React.CSSProperties}
     >
       {children}
-    </motion.div>
+    </div>
   );
 }

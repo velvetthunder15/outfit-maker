@@ -1,9 +1,9 @@
 "use client";
-// Amicro: hover/magnetic-button (MIT) — restyled
+// Amicro: hover/magnetic-button (MIT) — perf rewrite: no motion runtime. Magnetic pull only for a mouse
+// (pointerType "mouse"), rAF-throttled, transform-only; tap feedback is a CSS :active scale.
 import React, { useRef } from "react";
-import { motion, useSpring, useReducedMotion } from "motion/react";
 
-interface MagneticButtonProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "onDrag" | "onDragStart" | "onDragEnd" | "onAnimationStart"> {
+interface MagneticButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   children: React.ReactNode;
   range?: number;
   strength?: number;
@@ -18,41 +18,29 @@ const variants = {
 
 export function MagneticButton({ children, range = 60, strength = 0.3, className = "", variant = "coral", ...rest }: MagneticButtonProps) {
   const ref = useRef<HTMLButtonElement>(null);
-  const reduce = useReducedMotion();
-  const springConfig = { stiffness: 150, damping: 15, mass: 0.6 };
-  const x = useSpring(0, springConfig);
-  const y = useSpring(0, springConfig);
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!ref.current || reduce) return;
-    const { left, top, width, height } = ref.current.getBoundingClientRect();
-    const cx = left + width / 2;
-    const cy = top + height / 2;
-    const dist = Math.hypot(e.clientX - cx, e.clientY - cy);
-    if (dist < range + width / 2) {
-      x.set((e.clientX - cx) * strength);
-      y.set((e.clientY - cy) * strength);
-    } else {
-      x.set(0);
-      y.set(0);
-    }
+  const frame = useRef(0);
+  const move = (tx: number, ty: number) => {
+    cancelAnimationFrame(frame.current);
+    frame.current = requestAnimationFrame(() => {
+      if (ref.current) ref.current.style.translate = tx || ty ? `${tx}px ${ty}px` : "";
+    });
   };
-  const reset = () => {
-    x.set(0);
-    y.set(0);
-  };
-
   return (
-    <motion.button
+    <button
       ref={ref}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={reset}
-      whileTap={{ scale: 0.96 }}
-      style={{ x, y }}
-      className={`relative inline-flex items-center justify-center gap-2 rounded-full font-semibold text-sm h-12 px-7 transition-colors duration-200 cursor-pointer select-none disabled:opacity-50 disabled:cursor-not-allowed ${variants[variant]} ${className}`}
+      onPointerMove={(e) => {
+        if (e.pointerType !== "mouse" || !ref.current || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+        const { left, top, width, height } = ref.current.getBoundingClientRect();
+        const cx = left + width / 2;
+        const cy = top + height / 2;
+        if (Math.hypot(e.clientX - cx, e.clientY - cy) < range + width / 2) move((e.clientX - cx) * strength, (e.clientY - cy) * strength);
+        else move(0, 0);
+      }}
+      onPointerLeave={() => move(0, 0)}
+      className={`relative inline-flex items-center justify-center gap-2 rounded-full font-semibold text-sm h-12 px-7 transition-[translate,scale,background-color,border-color] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] active:scale-[0.95] active:duration-100 cursor-pointer select-none touch-manipulation disabled:opacity-50 disabled:cursor-not-allowed ${variants[variant]} ${className}`}
       {...rest}
     >
       <span className="relative z-10 inline-flex items-center gap-2 pointer-events-none">{children}</span>
-    </motion.button>
+    </button>
   );
 }

@@ -8,7 +8,7 @@ import { BUCKET } from "@/lib/storage";
  * user itself is intentionally not deleted here (that would remove their other account too).
  */
 export async function DELETE() {
-  const { supabase, user } = await requireUser();
+  const { supabase, user } = await requireUser({ strict: true });
   if (!user) return NextResponse.json({ error: "Sign in first" }, { status: 401 });
 
   for (;;) {

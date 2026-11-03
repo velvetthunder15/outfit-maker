@@ -1,6 +1,5 @@
 "use client";
 import { useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import { MagneticButton } from "./amicro/magnetic-button";
 import { BounceDots } from "./amicro/bounce-dots";
 
@@ -17,6 +16,8 @@ export function GoogleButton({ next = "/style", label = "Continue with Google", 
         onClick={async () => {
           setBusy(true);
           setErr(null);
+          // Supabase JS (~50 kB gz) is only fetched when someone actually taps sign-in.
+          const { createClient } = await import("@/lib/supabase/client");
           const supabase = createClient();
           const { error } = await supabase.auth.signInWithOAuth({
             provider: "google",

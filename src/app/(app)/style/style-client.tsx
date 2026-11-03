@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, m } from "motion/react";
 import { LocateFixed, MapPin, Search, Sparkles, Shirt } from "lucide-react";
 import { MOODS, OCCASIONS } from "@/lib/options";
 import type { GeoPlace, Weather } from "@/lib/types";
@@ -32,10 +32,7 @@ function defaultTime() {
 function Step({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
   return (
     <section className="py-8 border-t border-blue/12 first:border-t-0 first:pt-2">
-      <h2 className="flex items-baseline gap-3 text-xl font-semibold text-blue">
-        <span className="display-condensed text-coral-deep text-2xl tabular">{n}</span>
-        {title}
-      </h2>
+      <h2 className="text-xl font-semibold text-blue" data-step={n}>{title}</h2>
       <div className="mt-4">{children}</div>
     </section>
   );
@@ -174,7 +171,7 @@ export function StyleClient({ name, homeCity, wardrobeCount, usedToday, aiReady 
               </div>
               <AnimatePresence>
                 {results.length > 0 && !place && (
-                  <motion.ul initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="absolute z-20 mt-2 w-full rounded-2xl bg-paper border border-blue/15 shadow-[0_20px_40px_-20px_rgba(15,47,73,0.45)] overflow-hidden" role="listbox" id="place-results">
+                  <m.ul initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="absolute z-20 mt-2 w-full rounded-2xl bg-paper border border-blue/15 shadow-[0_20px_40px_-20px_rgba(15,47,73,0.45)] overflow-hidden" role="listbox" id="place-results">
                     {results.map((r) => (
                       <li key={`${r.lat},${r.lon}`}>
                         <button type="button" onClick={() => { setPlace(r); setQuery(r.name); setResults([]); }} className="w-full text-left px-4 py-3 hover:bg-blue/8 flex items-center gap-3">
@@ -183,7 +180,7 @@ export function StyleClient({ name, homeCity, wardrobeCount, usedToday, aiReady 
                         </button>
                       </li>
                     ))}
-                  </motion.ul>
+                  </m.ul>
                 )}
               </AnimatePresence>
             </div>
@@ -224,9 +221,9 @@ export function StyleClient({ name, homeCity, wardrobeCount, usedToday, aiReady 
           </MagneticButton>
           <AnimatePresence mode="wait">
             {busy && (
-              <motion.p key={line} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} className="text-center text-sm text-blue" role="status">
+              <m.p key={line} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} className="text-center text-sm text-blue" role="status">
                 {LOADING_LINES[line]}…
-              </motion.p>
+              </m.p>
             )}
           </AnimatePresence>
           {!aiReady && <p className="text-sm text-coral-deep">AI key not configured on this deployment yet, so styling is paused.</p>}

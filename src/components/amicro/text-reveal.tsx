@@ -1,26 +1,19 @@
-"use client";
-// Amicro: text/text-reveal (MIT) — lines can carry their own className
+// Amicro: text/text-reveal (MIT) — perf rewrite: CSS keyframes (transform only), server-renderable.
 import React from "react";
-import { motion } from "motion/react";
 
 export function TextReveal({ lines, duration = 0.9, staggerDelay = 0.12, className = "" }: { lines: { text: string; className?: string }[]; duration?: number; staggerDelay?: number; className?: string }) {
   return (
-    <motion.div
-      variants={{ hidden: { opacity: 1 }, visible: { opacity: 1, transition: { staggerChildren: staggerDelay } } }}
-      initial="hidden"
-      animate="visible"
-      className={`flex flex-col ${className}`}
-    >
+    <div className={`flex flex-col ${className}`} aria-hidden>
       {lines.map((line, i) => (
         <div key={i} className="overflow-hidden">
-          <motion.span
-            variants={{ hidden: { y: "105%" }, visible: { y: 0, transition: { duration, ease: [0.16, 1, 0.3, 1] } } }}
-            className={`block ${line.className ?? ""}`}
+          <span
+            className={`block om-reveal ${line.className ?? ""}`}
+            style={{ "--om-d": `${duration}s`, "--om-delay": `${i * staggerDelay}s` } as React.CSSProperties}
           >
             {line.text}
-          </motion.span>
+          </span>
         </div>
       ))}
-    </motion.div>
+    </div>
   );
 }

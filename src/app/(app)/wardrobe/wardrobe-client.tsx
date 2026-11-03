@@ -1,7 +1,7 @@
 "use client";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, m } from "motion/react";
 import { ImagePlus, Trash2, X, RefreshCw, Sparkles, AlertCircle } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { compressForWardrobe } from "@/lib/image";
@@ -14,6 +14,8 @@ import { ShimmerLine } from "@/components/amicro/shimmer-line";
 import { PromptChips } from "@/components/amicro/prompt-chips";
 
 type Upload = { key: string; name: string; status: "compressing" | "uploading" | "error"; error?: string; preview?: string };
+
+const PAGE = 24;
 
 const CAT_LABEL: Record<string, string> = {
   top: "Tops", bottom: "Bottoms", dress: "Dresses & sets", outerwear: "Layers", shoes: "Shoes", jewellery: "Jewellery", watch: "Watches",
@@ -35,7 +37,20 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
     items.forEach((i) => (c[i.category ?? "untagged"] = (c[i.category ?? "untagged"] ?? 0) + 1));
     return c;
   }, [items]);
-  const shown = filter === "all" ? items : items.filter((i) => (i.category ?? "untagged") === filter);
+  const filtered = filter === "all" ? items : items.filter((i) => (i.category ?? "untagged") === filter);
+  // Paginate the grid: render 24 tiles, grow by 24 when the sentinel nears the viewport.
+  const [limit, setLimit] = useState(PAGE);
+  useEffect(() => setLimit(PAGE), [filter]);
+  const shown = filtered.slice(0, limit);
+  const sentinel = useRef<HTMLDivElement>(null);
+  const hasMore = filtered.length > limit;
+  useEffect(() => {
+    const el = sentinel.current;
+    if (!el || !hasMore) return;
+    const io = new IntersectionObserver((e) => e[0].isIntersecting && setLimit((l) => l + PAGE), { rootMargin: "600px 0px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMore, limit]);
 
   async function tag(ids: string[]) {
     if (!ids.length) return;
@@ -141,7 +156,7 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
         <div className="w-full sm:w-64">
           <div className="flex justify-between text-sm"><span className="text-muted">Wardrobe space</span><span className="tabular text-blue font-medium">{items.length} / {WARDROBE_CAP}</span></div>
           <div className="mt-2 h-1.5 rounded-full bg-blue/12 overflow-hidden">
-            <motion.div className={`h-full rounded-full ${pct > 90 ? "bg-coral-deep" : "bg-blue"}`} initial={{ width: 0 }} animate={{ width: `${pct}%` }} transition={{ ease: [0.16, 1, 0.3, 1], duration: 0.8 }} />
+            <m.div className={`h-full w-full origin-left rounded-full ${pct > 90 ? "bg-coral-deep" : "bg-blue"}`} initial={{ scaleX: 0 }} animate={{ scaleX: pct / 100 }} transition={{ ease: [0.16, 1, 0.3, 1], duration: 0.8 }} />
           </div>
         </div>
       </div>
@@ -173,11 +188,11 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
       {/* Upload queue */}
       <AnimatePresence>
         {uploads.length > 0 && (
-          <motion.ul initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="mt-4 space-y-2">
+          <m.ul initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mt-4 space-y-2">
             {uploads.map((u) => (
               <li key={u.key} className="flex items-center gap-3 text-sm">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                {u.preview && <img src={u.preview} alt="" className="h-10 w-10 rounded-lg object-cover" />}
+                {u.preview && <img decoding="async" src={u.preview} alt="" className="h-10 w-10 rounded-lg object-cover" />}
                 <span className="flex-1 truncate">{u.name}</span>
                 {u.status === "error" ? (
                   <span className="text-coral-deep flex items-center gap-2">{u.error}<button onClick={() => setUploads((x) => x.filter((y) => y.key !== u.key))} aria-label="Dismiss"><X size={14} /></button></span>
@@ -186,7 +201,7 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
                 )}
               </li>
             ))}
-          </motion.ul>
+          </m.ul>
         )}
       </AnimatePresence>
 
@@ -213,16 +228,16 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
           <Link href="/style" className="mt-5 inline-flex nav-label text-blue hover:text-coral-deep">Get a general outfit idea →</Link>
         </div>
       ) : (
-        <motion.ul layout className="mt-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
-          <AnimatePresence>
+        <ul className="mt-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
+          <AnimatePresence initial={false}>
             {shown.map((item) => (
-              <motion.li key={item.id} layout initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}>
-                <button onClick={() => setEditing(item)} className="group block w-full text-left">
+              <m.li key={item.id} initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}>
+                <button onClick={() => setEditing(item)} className="group block w-full text-left transition-transform duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] active:scale-[0.97] touch-manipulation">
                   <div className="relative aspect-[4/5] overflow-hidden rounded-2xl bg-paper border border-blue/10">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    {item.thumb_url && <img src={item.thumb_url} alt={item.name ?? "Wardrobe item"} loading="lazy" className="h-full w-full object-cover transition-transform duration-500 ease-[var(--ease-out-expo)] group-hover:scale-[1.04]" />}
+                    {item.thumb_url && <img src={item.thumb_url} alt={item.name ?? "Wardrobe item"} loading="lazy" decoding="async" width={300} height={375} className="h-full w-full object-cover transition-transform duration-500 ease-[var(--ease-out-expo)] group-hover:scale-[1.04]" />}
                     {item.tag_status === "pending" && (
-                      <div className="absolute inset-x-0 bottom-0 bg-ivory/90 backdrop-blur px-3 py-2 flex items-center gap-2 text-xs text-blue"><Sparkles size={12} /> Tagging<BounceDots className="bg-blue scale-50" /></div>
+                      <div className="absolute inset-x-0 bottom-0 bg-ivory/95 px-3 py-2 flex items-center gap-2 text-xs text-blue"><Sparkles size={12} /> Tagging<BounceDots className="bg-blue scale-50" /></div>
                     )}
                     {item.tag_status === "failed" && <div className="absolute top-2 right-2 rounded-full bg-coral text-blue-ink text-[0.65rem] font-semibold px-2 py-0.5">Needs tags</div>}
                     {item.category && <span className="absolute top-2 left-2 rounded-full bg-ivory/90 text-blue nav-label !text-[0.6rem] px-2 py-1">{item.category}</span>}
@@ -234,10 +249,15 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
                     ))}
                   </div>
                 </button>
-              </motion.li>
+              </m.li>
             ))}
           </AnimatePresence>
-        </motion.ul>
+        </ul>
+      )}
+      {hasMore && (
+        <div ref={sentinel} className="mt-6 flex justify-center">
+          <button onClick={() => setLimit((l) => l + PAGE)} className="h-11 px-5 rounded-full border border-blue/25 text-sm font-medium text-blue active:scale-95 transition-transform">Show more ({filtered.length - limit})</button>
+        </div>
       )}
 
       {items.length >= 2 && (
@@ -254,12 +274,20 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
 function EditSheet({ item, onClose, onSave, onDelete, onRetag }: { item: WardrobeItem; onClose: () => void; onSave: (i: WardrobeItem) => void; onDelete: (i: WardrobeItem) => void; onRetag?: (i: WardrobeItem) => void }) {
   const [d, setD] = useState<WardrobeItem>(item);
   const [confirm, setConfirm] = useState(false);
+  // The grid only signs thumbnails; fetch the full-size photo when the sheet opens.
+  const [full, setFull] = useState<string | null>(item.image_url ?? null);
+  useEffect(() => {
+    if (full || !item.image_path) return;
+    let live = true;
+    createClient().storage.from(BUCKET).createSignedUrl(item.image_path, 3600).then(({ data }) => live && data && setFull(data.signedUrl));
+    return () => { live = false; };
+  }, [item.image_path, full]);
   const set = <K extends keyof WardrobeItem>(k: K, v: WardrobeItem[K]) => setD((s) => ({ ...s, [k]: v }));
   const list = (s: string) => s.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean).slice(0, 6);
   return (
     <>
-      <motion.div className="fixed inset-0 z-40 bg-blue-ink/40" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} />
-      <motion.aside
+      <m.div className="fixed inset-0 z-40 bg-blue-ink/40" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} />
+      <m.aside
         role="dialog"
         aria-modal="true"
         aria-label="Edit item"
@@ -274,7 +302,7 @@ function EditSheet({ item, onClose, onSave, onDelete, onRetag }: { item: Wardrob
           <button onClick={onClose} aria-label="Close" className="h-10 w-10 grid place-items-center rounded-full hover:bg-blue/10"><X size={20} /></button>
         </div>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        {item.image_url && <img src={item.image_url} alt="" className="mt-4 w-full max-h-72 object-contain rounded-2xl bg-paper" />}
+        {(full || item.thumb_url) && <img decoding="async" src={full ?? item.thumb_url ?? ""} alt="" className="mt-4 w-full max-h-72 object-contain rounded-2xl bg-paper" />}
         <div className="mt-5 space-y-4">
           <label className="block text-sm text-muted">Name<input className="field mt-1" value={d.name ?? ""} onChange={(e) => set("name", e.target.value)} /></label>
           <div>
@@ -308,7 +336,7 @@ function EditSheet({ item, onClose, onSave, onDelete, onRetag }: { item: Wardrob
             <Trash2 size={16} /> {confirm ? "Tap again to delete" : "Delete"}
           </button>
         </div>
-      </motion.aside>
+      </m.aside>
     </>
   );
 }
