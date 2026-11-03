@@ -4,7 +4,7 @@ import { BUCKET } from "@/lib/storage";
 import { callGemini, geminiConfigured, parseJson, TAG_SCHEMA, TAGGER_SYSTEM, GeminiError } from "@/lib/gemini";
 import { CATEGORIES } from "@/lib/types";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 type Tag = {
   is_clothing_or_accessory: boolean;

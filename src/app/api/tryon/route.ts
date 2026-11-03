@@ -4,7 +4,7 @@ import { BUCKET } from "@/lib/storage";
 import { callGemini, geminiConfigured, IMAGE_MODEL, GeminiError } from "@/lib/gemini";
 import type { OutfitResult } from "@/lib/types";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 /** Optional virtual try-on (idea ported from paipiange/nvzhuang): selfie + outfit -> Gemini image model. Nothing is stored. */
 export async function POST(req: Request) {

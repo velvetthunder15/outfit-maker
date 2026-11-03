@@ -10,7 +10,7 @@ AI stylist that builds complete outfits **from your own wardrobe photos** for yo
 - Per-user daily AI limits (30 outfits, 300 tags, 5 try-ons) and a 300-item wardrobe cap enforced in Postgres.
 
 ## Stack
-Next.js 15 (App Router, TypeScript, Tailwind v4) · Supabase (Postgres, Auth with Google + magic link, Storage, RLS on everything) · Google Gemini (`gemini-2.5-flash`, JSON-schema output) · Open-Meteo · Motion + vendored [Amicro](https://github.com/Subhan-code/Amicro--Micro-transitions-) micro-interactions.
+Next.js 15 (App Router, TypeScript, Tailwind v4) · Supabase (Postgres, Auth with Google + magic link, Storage, RLS on everything) · Google Gemini (`gemini-3.5-flash` with fallbacks, JSON-schema output) · Open-Meteo · Motion + vendored [Amicro](https://github.com/Subhan-code/Amicro--Micro-transitions-) micro-interactions.
 
 ## Setup
 1. `cp .env.example .env.local` and fill in the values.

@@ -1,8 +1,11 @@
 import "server-only";
 
 const API = "https://generativelanguage.googleapis.com/v1beta/models";
-export const TEXT_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-export const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
+export const TEXT_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash";
+export const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
+// Google retires model ids for new keys; on 404 fall through to the next one.
+const TEXT_FALLBACKS = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.7-flash"];
+const IMAGE_FALLBACKS = ["gemini-3.1-flash-image", "gemini-2.5-flash-image"];
 
 export const geminiConfigured = () => Boolean(process.env.GEMINI_API_KEY);
 
@@ -30,29 +33,45 @@ export async function callGemini(opts: {
       temperature: opts.temperature ?? 0.8,
       ...(opts.schema ? { responseMimeType: "application/json", responseSchema: opts.schema } : {}),
       ...(opts.imageOut ? { responseModalities: ["TEXT", "IMAGE"] } : {}),
+      ...(!opts.imageOut && process.env.GEMINI_THINKING !== "off" ? { thinkingConfig: { thinkingLevel: process.env.GEMINI_THINKING || "low" } } : {}),
     },
   };
   if (opts.system) body.systemInstruction = { parts: [{ text: opts.system }] };
-  const model = opts.model ?? TEXT_MODEL;
+  const first = opts.model ?? TEXT_MODEL;
+  const chain = Array.from(new Set([first, ...(opts.imageOut ? IMAGE_FALLBACKS : TEXT_FALLBACKS)]));
   let lastErr = "";
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const r = await fetch(`${API}/${model}:generateContent`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify(body),
-    });
-    if (r.ok) {
-      const j = await r.json();
-      const parts = j.candidates?.[0]?.content?.parts ?? [];
-      const text = parts.map((p: { text?: string }) => p.text ?? "").join("");
-      const images = parts
-        .filter((p: { inlineData?: unknown }) => p.inlineData)
-        .map((p: { inlineData: { mimeType: string; data: string } }) => ({ mime: p.inlineData.mimeType, data: p.inlineData.data }));
-      return { text, images };
+  for (const model of chain) {
+    let notFound = false;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await fetch(`${API}/${model}:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify(body),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        const parts = j.candidates?.[0]?.content?.parts ?? [];
+        const text = parts.filter((p: { thought?: boolean }) => !p.thought).map((p: { text?: string }) => p.text ?? "").join("");
+        const images = parts
+          .filter((p: { inlineData?: unknown }) => p.inlineData)
+          .map((p: { inlineData: { mimeType: string; data: string } }) => ({ mime: p.inlineData.mimeType, data: p.inlineData.data }));
+        return { text, images };
+      }
+      lastErr = `${model} ${r.status} ${(await r.text()).slice(0, 300)}`;
+      if (r.status === 400 && lastErr.toLowerCase().includes("thinking")) {
+        // model doesn't accept thinkingLevel: drop it and retry once
+        delete (body.generationConfig as Record<string, unknown>).thinkingConfig;
+        continue;
+      }
+      if (r.status === 404) {
+        notFound = true;
+        break;
+      }
+      if (r.status !== 429 && r.status < 500) break;
+      notFound = true; // overloaded/rate-limited: after the retry, move on to the next model
+      if (attempt === 0) await new Promise((res) => setTimeout(res, 800));
     }
-    lastErr = `${r.status} ${(await r.text()).slice(0, 300)}`;
-    if (r.status !== 429 && r.status < 500) break;
-    await new Promise((res) => setTimeout(res, 1200));
+    if (!notFound) break;
   }
   throw new GeminiError(`Gemini request failed: ${lastErr}`, 502);
 }

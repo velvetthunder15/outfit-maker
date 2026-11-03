@@ -9,7 +9,7 @@ import {
 import { pinterestUrl } from "@/lib/pinterest";
 import type { OutfitResult, WardrobeItem } from "@/lib/types";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 const Body = z.object({
   mood: z.string().max(60),
