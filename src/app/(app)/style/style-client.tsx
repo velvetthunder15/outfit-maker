@@ -168,12 +168,13 @@ export function StyleClient({ name, homeCity, wardrobeCount, usedToday, aiReady 
                   onChange={(e) => { setQuery(e.target.value); setPlace(null); }}
                   role="combobox"
                   aria-autocomplete="list"
-                  aria-expanded={results.length > 0}
+                  aria-controls="place-results"
+                  aria-expanded={results.length > 0 && !place}
                 />
               </div>
               <AnimatePresence>
                 {results.length > 0 && !place && (
-                  <motion.ul initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="absolute z-20 mt-2 w-full rounded-2xl bg-paper border border-blue/15 shadow-[0_20px_40px_-20px_rgba(15,47,73,0.45)] overflow-hidden" role="listbox">
+                  <motion.ul initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="absolute z-20 mt-2 w-full rounded-2xl bg-paper border border-blue/15 shadow-[0_20px_40px_-20px_rgba(15,47,73,0.45)] overflow-hidden" role="listbox" id="place-results">
                     {results.map((r) => (
                       <li key={`${r.lat},${r.lon}`}>
                         <button type="button" onClick={() => { setPlace(r); setQuery(r.name); setResults([]); }} className="w-full text-left px-4 py-3 hover:bg-blue/8 flex items-center gap-3">
