@@ -26,7 +26,7 @@ export function MagicLinkForm({ next }: { next: string }) {
     >
       <label htmlFor="email" className="nav-label text-blue">Email me a sign-in link</label>
       <input id="email" type="email" required autoComplete="email" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} className="field" />
-      <MagneticButton type="submit" variant="ghost" disabled={state === "sending"}>
+      <MagneticButton type="submit" variant="ghost" className="w-full" disabled={state === "sending"}>
         {state === "sending" ? <BounceDots className="bg-blue" /> : "Send link"}
       </MagneticButton>
       {state === "sent" && <p className="text-sm text-blue" role="status">Check your inbox for the sign-in link.</p>}

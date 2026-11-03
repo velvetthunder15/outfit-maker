@@ -23,9 +23,9 @@ export default async function Login({ searchParams }: { searchParams: Promise<{ 
         </p>
       )}
       <div className="mt-8">
-        <GoogleButton next={next} />
+        <GoogleButton next={next} full />
       </div>
-      <div className="my-8 flex items-center gap-4 text-blue nav-label">
+      <div className="my-9 flex items-center gap-4 text-blue nav-label">
         <span className="h-px flex-1 bg-blue/35" />or<span className="h-px flex-1 bg-blue/35" />
       </div>
       <MagicLinkForm next={next} />
