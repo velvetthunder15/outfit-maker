@@ -80,8 +80,10 @@ async function embed(job: string, data: ArrayBuffer, W: number, H: number) {
     dispose(inputs.pixel_values);
   }
   console.debug(`[cutout] embed ${W}x${H} ${Math.round(performance.now() - t0)} ms`);
-  // Only keep the most recent photo's embedding (memory on phones); older ones are freed.
-  for (const k of Array.from(embeds.keys())) drop(k);
+  // Keep at most the two most recent embeddings (memory on phones): a single-piece re-cut can run
+  // between a photo's embed and its cut without evicting it. Clients drop theirs after cutting.
+  const keys = Array.from(embeds.keys());
+  for (const k of keys.slice(0, Math.max(0, keys.length - 1))) drop(k);
   embeds.set(job, { emb, W, H, orig: inputs.original_sizes, resized: inputs.reshaped_input_sizes });
 }
 

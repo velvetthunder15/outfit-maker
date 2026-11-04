@@ -30,6 +30,8 @@ export type Piece = {
   kind: "cutout" | "crop" | "photo";
   selected: boolean;
   low?: boolean; // cutout looks unreliable (mostly hidden item): shown unticked
+  /** Where the piece sits in the original photo ([ymin,xmin,ymax,xmax] 0-1000); null = whole photo. */
+  boxes: Box[] | null;
 };
 
 export type Stage = "reading" | "finding" | "cutting" | "ready" | "error";
@@ -261,6 +263,8 @@ function creeper(report: (s: Stage, f: number) => void) {
 
 // ---------------- the pipeline ----------------
 type Opts = {
+  /** "crop" skips the segmentation model: every detected item becomes a box crop on white. */
+  mode?: "cutout" | "crop";
   hint?: { name?: string | null; category?: string | null };
   onStage?: (s: Stage, frac: number) => void;
   onModel?: (frac: number) => void;
@@ -342,14 +346,14 @@ async function run(input: File | Blob, opts: Opts, prog: ReturnType<typeof creep
     const source = await compressDecoded(work);
     alive();
     const photoPiece = (note?: string): Processed => ({
-      pieces: [{ key: crypto.randomUUID(), tags: null, main: source.main, thumb: source.thumb, ext: source.ext as "webp" | "jpg", preview: URL.createObjectURL(source.thumb), kind: "photo", selected: true }],
+      pieces: [{ key: crypto.randomUUID(), tags: null, main: source.main, thumb: source.thumb, ext: source.ext as "webp" | "jpg", preview: URL.createObjectURL(source.thumb), kind: "photo", selected: true, boxes: null }],
       source: { main: source.main, ext: source.ext as "webp" | "jpg" },
       note,
     });
 
     // Detection (server, Gemini) and the image embedding (worker) run at the same time.
     prog.to("finding", 0.12, 0.5);
-    c = getCutter();
+    c = opts.mode === "crop" ? null : getCutter();
     if (c) {
       c.onProgress = (f) => {
         alive(); // model download is real progress
@@ -459,7 +463,7 @@ async function run(input: File | Blob, opts: Opts, prog: ReturnType<typeof creep
       const card = ok ? composeCard(hi, m!.W ?? W, m!.H ?? H, m!.rect!, m!.alpha!) : composeCard(hi, W, H, boxUnion(k.t.boxes, W, H), null);
       const b = await cardBlobs(card).finally(() => release(card));
       const low = ok && (m!.fill ?? 1) < (GARMENT.has(k.t.category) ? 0.33 : 0.15);
-      pieces.push({ key: k.key, tags: k.t, ...b, preview: URL.createObjectURL(b.thumb), kind: ok ? "cutout" : "crop", selected: !low, low });
+      pieces.push({ key: k.key, tags: k.t, ...b, preview: URL.createObjectURL(b.thumb), kind: ok ? "cutout" : "crop", selected: !low, low, boxes: k.t.boxes });
       alive();
       prog.to("cutting", 0.82 + (0.17 * (i + 1)) / keyed.length, 0.82 + (0.17 * (i + 1)) / keyed.length);
     }
@@ -467,10 +471,108 @@ async function run(input: File | Blob, opts: Opts, prog: ReturnType<typeof creep
     return {
       pieces,
       source: { main: source.main, ext: source.ext as "webp" | "jpg" },
-      note: fellBack ? (fellBack === pieces.length ? "Cutouts aren't available on this device right now, so pieces are cropped from the photo." : "Some pieces couldn't be cut out cleanly and are cropped instead.") : undefined,
+      note: fellBack && opts.mode !== "crop" ? (fellBack === pieces.length ? "Cutouts aren't available on this device right now, so pieces are cropped from the photo." : "Some pieces couldn't be cut out cleanly and are cropped instead.") : undefined,
     };
   } finally {
     release(hi, work);
     if (c) c.onProgress = null;
+  }
+}
+
+// ---------------- one piece, again ----------------
+export type RecutMode = "cutout" | "crop" | "photo";
+export type Recut = { main: Blob; thumb: Blob; ext: "webp" | "jpg"; kind: Piece["kind"]; low?: boolean; boxes: Box[] | null; note?: string };
+
+/** Whole photo minus a small margin: the box used when a piece has none (e.g. detection failed). */
+export const WHOLE_BOX: Box = [20, 20, 980, 980];
+
+/**
+ * Re-make one piece from its original photo: a fresh cutout for `boxes`, a plain box crop on white,
+ * or the whole photo. A cutout that fails, stalls or isn't supported falls back to the crop, so this
+ * always resolves with something usable (unless the photo itself can't be read).
+ */
+export async function recutPiece(input: File | Blob, boxes: Box[] | null, mode: RecutMode, opts: { onStage?: (s: Stage, frac: number) => void; onModel?: (f: number) => void; category?: string | null } = {}): Promise<Recut> {
+  const prog = creeper(opts.onStage ?? (() => {}));
+  prog.to("reading", 0.03, 0.15);
+  let hi: HTMLCanvasElement | null = null;
+  let work: HTMLCanvasElement | null = null;
+  try {
+    const src: Src = input instanceof File ? await decodeChecked(input) : await decode(input);
+    try {
+      hi = scaled(src, 2048);
+      work = scaled(src, 1024);
+    } finally {
+      if ("close" in src) src.close();
+    }
+    const W = work.width, H = work.height;
+    if (mode === "photo") {
+      const s = await compressDecoded(work);
+      prog.to("ready", 1, 1);
+      return { main: s.main, thumb: s.thumb, ext: s.ext as "webp" | "jpg", kind: "photo", boxes: null };
+    }
+    const bx = boxes?.length ? boxes : [WHOLE_BOX];
+    let note: string | undefined;
+    if (mode === "cutout") {
+      const c = getCutter();
+      if (!c) note = "Cutouts aren't available on this device, so it's cropped instead.";
+      else {
+        prog.to("cutting", 0.2, 0.6);
+        const job = crypto.randomUUID();
+        // Watchdog: no real progress (model download counts) for too long -> give up and crop instead.
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        let fail: (e: Error) => void = () => {};
+        const stalled = new Promise<never>((_, rej) => (fail = rej));
+        stalled.catch(() => {});
+        const alive = (ms: number) => {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => fail(new StalledError()), ms);
+        };
+        alive(c.ready ? 60_000 : 200_000);
+        const prev = c.onProgress; // a photo may be processing at the same time: keep its listener too
+        const mine = (f: number) => {
+          prev?.(f);
+          opts.onModel?.(f);
+          alive(STALL_MS);
+        };
+        c.onProgress = mine;
+        try {
+          const data = ctx2d(work).getImageData(0, 0, W, H).data;
+          c.photos++;
+          const masks = await Promise.race([
+            (async () => {
+              await c.call({ type: "embed", job, data: data.buffer, W, H }, [data.buffer], c.ready ? 60_000 : 180_000);
+              c.ready = true;
+              alive(45_000);
+              prog.to("cutting", 0.65, 0.85);
+              return c.cut(job, [{ key: "p", boxes: bx }]);
+            })(),
+            stalled,
+          ]);
+          const m = masks.get("p");
+          if (m?.ok && m.alpha && m.rect) {
+            const card = composeCard(hi, m.W ?? W, m.H ?? H, m.rect, m.alpha);
+            const b = await cardBlobs(card).finally(() => release(card));
+            const low = (m.fill ?? 1) < (GARMENT.has(opts.category ?? "") ? 0.33 : 0.15);
+            prog.to("ready", 1, 1);
+            return { ...b, kind: "cutout", low, boxes: bx };
+          }
+          note = "Couldn't cut this one out cleanly, so it's cropped instead.";
+        } catch (e) {
+          if (e instanceof StalledError) resetCutter();
+          note = e instanceof StalledError ? "Cutting out took too long, so it's cropped instead." : "Couldn't cut this one out, so it's cropped instead.";
+        } finally {
+          if (timer) clearTimeout(timer);
+          if (c.onProgress === mine) c.onProgress = prev;
+          if (!c.broken) c.call({ type: "drop", job }).catch(() => {});
+        }
+      }
+    }
+    const card = composeCard(hi, W, H, boxUnion(bx, W, H), null);
+    const b = await cardBlobs(card).finally(() => release(card));
+    prog.to("ready", 1, 1);
+    return { ...b, kind: "crop", boxes: bx, note };
+  } finally {
+    prog.stop();
+    release(hi, work);
   }
 }
