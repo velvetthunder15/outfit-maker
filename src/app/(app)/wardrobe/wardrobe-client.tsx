@@ -870,7 +870,7 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
           >
             <div className="pointer-events-auto flex w-full max-w-md items-center gap-2 rounded-2xl bg-ivory p-2 pl-2 border border-blue/15 shadow-[0_16px_36px_-18px_rgba(15,47,73,0.55)]">
               <button onClick={exitSelect} aria-label="Cancel selection" className="h-11 w-11 shrink-0 grid place-items-center rounded-xl text-muted hover:bg-blue/10"><X size={18} /></button>
-              <span className="flex-1 min-w-0 text-sm font-medium text-ink tabular truncate">{sel.size ? `${sel.size} selected` : "Tap items to select"}</span>
+              <span className="flex-1 min-w-0 text-sm font-medium text-ink tabular truncate">{sel.size ? `${sel.size} selected` : "Tap to select"}</span>
               <button
                 onClick={() => {
                   cleanUp(selItems);
