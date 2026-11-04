@@ -3,6 +3,7 @@
 // runs when the toast expires, when another toast replaces it, or when the page goes away.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RotateCcw, X } from "lucide-react";
+import { Portal } from "@/components/portal";
 
 type Pending = { id: number; msg: string; undo?: () => void; commit?: () => void; timer: ReturnType<typeof setTimeout> | null };
 
@@ -66,6 +67,7 @@ export function useUndoToast() {
 export function UndoToast({ toast, onUndo, onDismiss }: { toast: { id: number; msg: string; canUndo: boolean } | null; onUndo: () => void; onDismiss: () => void }) {
   if (!toast) return null;
   return (
+    <Portal>
     <div className="pointer-events-none fixed inset-x-0 z-[60] flex justify-center px-4 bottom-[calc(env(safe-area-inset-bottom)+5.75rem)] md:bottom-6">
       <div
         key={toast.id}
@@ -85,5 +87,6 @@ export function UndoToast({ toast, onUndo, onDismiss }: { toast: { id: number; m
         </button>
       </div>
     </div>
+    </Portal>
   );
 }

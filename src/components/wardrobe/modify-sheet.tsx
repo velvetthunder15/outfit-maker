@@ -9,6 +9,7 @@ import type { Box } from "@/lib/cutout/core";
 import { PromptChips } from "@/components/amicro/prompt-chips";
 import { MagneticButton } from "@/components/amicro/magnetic-button";
 import { CropEditor } from "./crop-editor";
+import { Portal } from "@/components/portal";
 
 export type TagDraft = {
   name: string;
@@ -88,6 +89,7 @@ export function ModifySheet({
   const canApply = !adding || Boolean(b);
 
   return (
+    <Portal>
     <>
       <m.div className="fixed inset-0 z-40 bg-blue-ink/40" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }} onClick={onClose} />
       <m.aside
@@ -203,5 +205,6 @@ export function ModifySheet({
         </div>
       </m.aside>
     </>
+    </Portal>
   );
 }

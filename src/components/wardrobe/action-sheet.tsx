@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { AnimatePresence, m } from "motion/react";
 import type { LucideIcon } from "lucide-react";
+import { Portal } from "@/components/portal";
 
 export type SheetAction = { id: string; label: string; desc?: string; icon: LucideIcon; danger?: boolean; disabled?: boolean };
 
@@ -14,6 +15,7 @@ export function ActionSheet({ open, title, subtitle, actions, onPick, onClose }:
     return () => window.removeEventListener("keydown", k);
   }, [open, onClose]);
   return (
+    <Portal>
     <AnimatePresence>
       {open && (
         <>
@@ -58,5 +60,6 @@ export function ActionSheet({ open, title, subtitle, actions, onPick, onClose }:
         </>
       )}
     </AnimatePresence>
+    </Portal>
   );
 }
