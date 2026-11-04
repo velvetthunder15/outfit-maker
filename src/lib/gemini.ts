@@ -10,6 +10,9 @@ const IMAGE_FALLBACKS = ["gemini-3.1-flash-image", "gemini-2.5-flash-image"];
 
 const exhausted = new Map<string, number>();
 const GROQ_MODEL = `groq:${process.env.GROQ_MODEL || "qwen/qwen3.8-27b"}`;
+// Text-only calls (outfits): Groq gpt-oss is fast, reliable with JSON and has far higher free output limits than
+// qwen (qwen's free tier caps output at ~1000 tokens/min, too small for an outfit; seen 2026-11-04).
+const GROQ_TEXT_MODELS = ["groq:openai/gpt-oss-120b", "groq:openai/gpt-oss-20b"];
 // OpenRouter free vision models (shared free pools: often rate-limited, so they come after Groq).
 const OPENROUTER_MODELS = (process.env.OPENROUTER_MODELS || "nvidia/nemotron-3.5-super-vl:free,google/gemma-4-31b-it:free")
   .split(",")
@@ -51,7 +54,11 @@ async function callCompat(
       temperature: opts.temperature ?? 0.8,
       messages: [...(system ? [{ role: "system", content: system }] : []), { role: "user", content }],
       ...(opts.schema && cfg.jsonMode ? { response_format: { type: "json_object" } } : {}),
-      max_completion_tokens: 4096,
+      ...(model.startsWith("openai/gpt-oss")
+        ? { reasoning_effort: "low", max_completion_tokens: 6000 }
+        : model.startsWith("qwen/")
+          ? { reasoning_effort: "none", max_completion_tokens: 1000 }
+          : { max_completion_tokens: 8192 }),
     }),
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -59,7 +66,16 @@ async function callCompat(
   const j = await r.json();
   const text: string = j.choices?.[0]?.message?.content ?? "";
   if (!text.trim()) throw new Error("empty reply");
-  return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+  const out = text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+  // A cut-off or malformed JSON reply must fall through to the next model, not fail the request.
+  if (opts.schema) {
+    try {
+      parseJson(out);
+    } catch {
+      throw new Error(`bad JSON (${j.choices?.[0]?.finish_reason ?? "?"})`);
+    }
+  }
+  return out;
 }
 
 export const geminiConfigured = () => Boolean(process.env.GEMINI_API_KEY);
@@ -100,7 +116,8 @@ export async function callGemini(opts: {
   let all = Array.from(new Set([first, ...(opts.imageOut ? IMAGE_FALLBACKS : TEXT_FALLBACKS)]));
   // Groq (free tier, vision-capable Qwen) sits after the full Gemini Flash models and before flash-lite.
   if (!opts.imageOut) {
-    const extra = [...(process.env.GROQ_API_KEY ? [GROQ_MODEL] : []), ...(process.env.OPENROUTER_API_KEY ? OPENROUTER_MODELS : [])];
+    const textOnly = opts.parts.every((p) => "text" in p);
+    const extra = [...(process.env.GROQ_API_KEY ? [...(textOnly ? GROQ_TEXT_MODELS : []), GROQ_MODEL] : []), ...(process.env.OPENROUTER_API_KEY ? OPENROUTER_MODELS : [])];
     const lite = all.indexOf("gemini-3.5-flash-lite");
     const at = lite === -1 ? all.length : lite;
     all = [...all.slice(0, at), ...extra, ...all.slice(at)];
