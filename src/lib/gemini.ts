@@ -4,7 +4,8 @@ const API = "https://generativelanguage.googleapis.com/v1beta/models";
 export const TEXT_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash";
 export const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
 // Google retires model ids for new keys; on 404 fall through to the next one.
-const TEXT_FALLBACKS = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.7-flash"];
+// gemini-3.5-flash-lite is last: during demand spikes (503 on every flash model, seen 2026-11-04) it was the one still answering.
+const TEXT_FALLBACKS = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite"];
 const IMAGE_FALLBACKS = ["gemini-3.1-flash-image", "gemini-2.5-flash-image"];
 
 export const geminiConfigured = () => Boolean(process.env.GEMINI_API_KEY);
@@ -103,6 +104,33 @@ export const TAG_SCHEMA = S("OBJECT", {
   required: ["is_clothing_or_accessory", "name", "category", "colors", "pattern", "fabric", "formality", "seasons", "styles"],
 });
 
+const TAG_PROPS = (TAG_SCHEMA as unknown as { properties: Record<string, unknown> }).properties;
+
+/** Multi-item detection: tags + Gemini-native boxes ([ymin, xmin, ymax, xmax], 0-1000) per item. */
+export const DETECT_SCHEMA = S("OBJECT", {
+  properties: {
+    items: arr(
+      S("OBJECT", {
+        properties: {
+          name: TAG_PROPS.name,
+          category: TAG_PROPS.category,
+          subcategory: TAG_PROPS.subcategory,
+          colors: TAG_PROPS.colors,
+          pattern: TAG_PROPS.pattern,
+          fabric: TAG_PROPS.fabric,
+          formality: TAG_PROPS.formality,
+          seasons: TAG_PROPS.seasons,
+          styles: TAG_PROPS.styles,
+          boxes: arr(arr(S("INTEGER"))),
+          worn: S("BOOLEAN"),
+        },
+        required: ["name", "category", "colors", "pattern", "fabric", "formality", "seasons", "styles", "boxes", "worn"],
+      })
+    ),
+  },
+  required: ["items"],
+});
+
 const PIECE = S("OBJECT", {
   properties: {
     slot: S("STRING", {
@@ -155,6 +183,17 @@ export const TAGGER_SYSTEM = `You catalogue a person's wardrobe from photos. Loo
 - pattern: solid, striped, checked, floral, printed, embroidered, paisley, block print, graphic, etc.
 - fabric: your best guess (cotton, linen, denim, silk, wool, leather, knit, chiffon, metal, etc.).
 - If the photo shows something that is not clothing/accessory, set is_clothing_or_accessory=false and still fill fields with best guesses.`;
+
+export const DETECT_SYSTEM = `You catalogue a person's wardrobe from photos. Find every separate wardrobe item in the photo (garments, shoes, jewellery, watches, bags, belts, eyewear, hats, scarves) and tag each one.
+- One entry per item the person owns. A pair counts as ONE item: two shoes, two earrings, a pair of socks or gloves. A set of bangles worn or stacked together is one item.
+- boxes: tight bounding boxes as [ymin, xmin, ymax, xmax] normalised to 0-1000. Give one box per physical piece of the item (2 boxes for a pair of shoes or earrings, 1 box for a shirt). Boxes must tightly enclose only that piece, including straps, laces and buckles.
+- If a person is wearing the clothes, list each clearly visible worn item (top, bottom, layer, shoes, watch, jewellery, bag...) and set worn=true. Never list the person, their body, hair, skin or face. Skip items that are mostly hidden or cut off (less than about half visible), and tiny items you cannot identify.
+- Ignore furniture, bedding, hangers, mannequins, floors, walls, packaging, phones and other non-wardrobe objects.
+- category must be one of the enum values. Earrings, necklaces, rings, bangles, bracelets, nose pins, anklets, maang tikka -> jewellery. Wristwatches -> watch. Sunglasses/glasses -> eyewear. Jackets, blazers, coats, cardigans, shrugs, overshirts and hoodies worn open -> outerwear. Sarees, lehengas, anarkalis, jumpsuits, co-ord one-pieces -> dress. Kurtas, shirts, tees, blouses, crop tops -> top. Dupattas and stoles -> scarf.
+- name: short human name, e.g. "Navy oxford shirt", "Gold jhumka earrings".
+- colors: 1-3 plain color names, dominant first. pattern: solid, striped, checked, floral, printed, embroidered, etc. fabric: your best guess.
+- If there is no wardrobe item at all, return an empty items list.
+- At most 8 items, largest and clearest first.`;
 
 export const STYLIST_SYSTEM = `You are "Outfit Maker", a sharp editorial personal stylist for men and women, fluent in current Pinterest fashion trends and Indian + global dressing.
 

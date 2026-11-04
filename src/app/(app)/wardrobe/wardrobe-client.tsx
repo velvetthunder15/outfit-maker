@@ -2,18 +2,35 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { AnimatePresence, m } from "motion/react";
-import { ImagePlus, Trash2, X, RefreshCw, Sparkles, AlertCircle } from "lucide-react";
+import { ImagePlus, Trash2, X, RefreshCw, Sparkles, AlertCircle, Wand2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { compressForWardrobe } from "@/lib/image";
+import { processPhoto, warmCutter, type Piece } from "@/lib/cutout/client";
+import { PieceReview, type Job } from "./piece-review";
 import { BUCKET, WARDROBE_CAP } from "@/lib/storage";
 import { CATEGORIES, FORMALITY, SEASONS, type WardrobeItem } from "@/lib/types";
 import { colorHex } from "@/lib/options";
 import { MagneticButton } from "@/components/amicro/magnetic-button";
 import { BounceDots } from "@/components/amicro/bounce-dots";
-import { ShimmerLine } from "@/components/amicro/shimmer-line";
 import { PromptChips } from "@/components/amicro/prompt-chips";
 
-type Upload = { key: string; name: string; status: "compressing" | "uploading" | "error"; error?: string; preview?: string };
+const CLEANUP_BATCH = 20;
+
+/** Row fields from a detected piece (tags already sanitised by /api/wardrobe/detect). */
+function tagPatch(p: Piece) {
+  const t = p.tags!;
+  return {
+    name: t.name,
+    category: t.category,
+    subcategory: t.subcategory,
+    colors: t.colors,
+    pattern: t.pattern,
+    fabric: t.fabric,
+    formality: t.formality,
+    seasons: t.seasons,
+    styles: t.styles,
+    tag_status: "done" as const,
+  };
+}
 
 const PAGE = 24;
 
@@ -25,7 +42,10 @@ const CAT_LABEL: Record<string, string> = {
 export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { userId: string; initialItems: WardrobeItem[]; welcome: boolean; aiReady: boolean }) {
   const supabase = useMemo(() => createClient(), []);
   const [items, setItems] = useState<WardrobeItem[]>(initialItems);
-  const [uploads, setUploads] = useState<Upload[]>([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [model, setModel] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+  const queue = useRef<Promise<void>>(Promise.resolve());
   const [filter, setFilter] = useState<string>("all");
   const [editing, setEditing] = useState<WardrobeItem | null>(null);
   const [banner, setBanner] = useState<string | null>(aiReady ? null : "AI tagging isn't switched on yet. Photos still save; you can tag items by hand.");
@@ -81,48 +101,187 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
     }
   }
 
-  async function handleFiles(files: FileList | File[]) {
-    const list = Array.from(files);
-    const room = WARDROBE_CAP - items.length;
-    if (room <= 0) return setBanner(`Your wardrobe is full (${WARDROBE_CAP} items). Remove a few to add more.`);
-    const take = list.slice(0, room);
-    if (list.length > room) setBanner(`Only ${room} more items fit. Added the first ${room}.`);
-    const created: string[] = [];
-    await Promise.all(
-      take.map(async (file, idx) => {
-        const key = `${Date.now()}-${idx}-${file.name}`;
-        setUploads((u) => [...u, { key, name: file.name, status: "compressing", preview: URL.createObjectURL(file) }]);
-        try {
-          const { main, thumb, ext } = await compressForWardrobe(file);
-          setUploads((u) => u.map((x) => (x.key === key ? { ...x, status: "uploading" } : x)));
-          const id = crypto.randomUUID();
-          const path = `${userId}/${id}.${ext}`;
-          const tpath = `${userId}/${id}_t.${ext}`;
-          const ct = ext === "webp" ? "image/webp" : "image/jpeg";
-          const up1 = await supabase.storage.from(BUCKET).upload(path, main, { contentType: ct, upsert: false });
-          if (up1.error) throw new Error(up1.error.message);
-          const up2 = await supabase.storage.from(BUCKET).upload(tpath, thumb, { contentType: ct, upsert: false });
-          if (up2.error) throw new Error(up2.error.message);
-          const { data, error } = await supabase
-            .from("om_wardrobe_items")
-            .insert({ id, user_id: userId, image_path: path, thumb_path: tpath, name: file.name.replace(/\.[^.]+$/, "").slice(0, 60), tag_status: aiReady ? "pending" : "manual" })
-            .select("*")
-            .single();
-          if (error) {
-            await supabase.storage.from(BUCKET).remove([path, tpath]);
-            throw new Error(error.message.includes("wardrobe_full") ? "Wardrobe is full" : error.message);
-          }
-          const { data: signed } = await supabase.storage.from(BUCKET).createSignedUrls([path, tpath], 3600);
-          const item = { ...(data as WardrobeItem), image_url: signed?.[0]?.signedUrl, thumb_url: signed?.[1]?.signedUrl };
-          setItems((s) => [item, ...s]);
-          setUploads((u) => u.filter((x) => x.key !== key));
-          created.push(id);
-        } catch (e) {
-          setUploads((u) => u.map((x) => (x.key === key ? { ...x, status: "error", error: e instanceof Error ? e.message : "Upload failed" } : x)));
+  const patchJob = (key: string, patch: Partial<Job> | ((j: Job) => Partial<Job>)) =>
+    setJobs((js) => js.map((j) => (j.key === key ? { ...j, ...(typeof patch === "function" ? patch(j) : patch) } : j)));
+
+  /** Photos are processed one at a time (memory on phones); detection + embedding overlap inside each. */
+  function enqueue(job: Job, input: () => Promise<File | Blob>, hint?: { name?: string | null; category?: string | null }) {
+    queue.current = queue.current.then(async () => {
+      try {
+        const res = await processPhoto(await input(), {
+          hint,
+          onStage: (stage, frac) => patchJob(job.key, { stage, frac }),
+          onModel: (f) => setModel(f),
+        });
+        let pieces = res.pieces;
+        let note = res.note;
+        if (job.mode === "cleanup") {
+          // Only a real cutout replaces an existing photo.
+          pieces = pieces.filter((p) => p.kind === "cutout").slice(0, 1);
+          if (!pieces.length) note = res.note ?? "Couldn't cut this one out cleanly; keeping the photo.";
         }
-      })
+        patchJob(job.key, { stage: pieces.length ? "ready" : "error", frac: 1, pieces, source: res.source, note, error: pieces.length ? undefined : note });
+      } catch (e) {
+        patchJob(job.key, { stage: "error", error: e instanceof Error ? e.message : "Couldn't process this photo" });
+      }
+    });
+  }
+
+  function handleFiles(files: FileList | File[]) {
+    const list = Array.from(files).filter((f) => f.size);
+    if (!list.length) return;
+    if (WARDROBE_CAP - items.length <= 0) return setBanner(`Your wardrobe is full (${WARDROBE_CAP} items). Remove a few to add more.`);
+    if (!aiReady) {
+      setBanner("AI isn't switched on, so photos are saved as they are.");
+    }
+    warmCutter();
+    const fresh: Job[] = list.slice(0, 30).map((file, idx) => ({
+      key: `${Date.now()}-${idx}`,
+      mode: "new",
+      name: file.name,
+      preview: URL.createObjectURL(file),
+      stage: "queued",
+      frac: 0,
+      pieces: [],
+    }));
+    if (list.length > 30) setBanner("Added the first 30 photos. Add the rest after saving these.");
+    setJobs((js) => [...js, ...fresh]);
+    fresh.forEach((j, i) => enqueue(j, async () => list[i]));
+  }
+
+  const legacy = items.filter((i) => i.image_kind !== "cutout" && i.image_path);
+  function cleanUp() {
+    const busy = new Set(jobs.map((j) => j.itemId).filter(Boolean));
+    const todo = legacy.filter((i) => !busy.has(i.id)).slice(0, CLEANUP_BATCH);
+    if (!todo.length) return;
+    warmCutter();
+    const fresh: Job[] = todo.map((it) => ({
+      key: `c-${it.id}`,
+      mode: "cleanup",
+      name: it.name ?? "Wardrobe item",
+      preview: it.thumb_url ?? it.image_url ?? "",
+      stage: "queued",
+      frac: 0,
+      pieces: [],
+      itemId: it.id,
+    }));
+    setJobs((js) => [...js, ...fresh]);
+    todo.forEach((it, k) =>
+      enqueue(
+        fresh[k],
+        async () => {
+          const { data } = await supabase.storage.from(BUCKET).download(it.image_path!);
+          if (!data) throw new Error("Couldn't load the photo");
+          return data;
+        },
+        { name: it.name, category: it.category }
+      )
     );
-    if (aiReady) await tag(created);
+    if (legacy.length > todo.length) setBanner(`Cleaning up ${todo.length} of ${legacy.length}. Run it again for the rest.`);
+  }
+
+  function togglePiece(job: string, piece: string) {
+    patchJob(job, (j) => ({ pieces: j.pieces.map((p) => (p.key === piece ? { ...p, selected: !p.selected } : p)) }));
+  }
+
+  function dropJobs(keys: string[]) {
+    setJobs((js) => {
+      js.filter((j) => keys.includes(j.key)).forEach((j) => {
+        if (j.preview.startsWith("blob:")) URL.revokeObjectURL(j.preview);
+        j.pieces.forEach((p) => URL.revokeObjectURL(p.preview));
+      });
+      return js.filter((j) => !keys.includes(j.key));
+    });
+  }
+
+  async function upload(path: string, blob: Blob) {
+    const r = await supabase.storage.from(BUCKET).upload(path, blob, { contentType: blob.type || "image/webp", upsert: false });
+    if (r.error) throw new Error(r.error.message);
+  }
+
+  async function saveReviewed() {
+    const ready = jobs.filter((j) => j.stage === "ready");
+    if (!ready.length) return;
+    setSaving(true);
+    const created: WardrobeItem[] = [];
+    const untagged: string[] = [];
+    const done: string[] = [];
+    let room = WARDROBE_CAP - items.length;
+    let skipped = 0;
+    let failed = 0;
+    for (const j of ready) {
+      const chosen = j.pieces.filter((p) => p.selected);
+      try {
+        if (j.mode === "cleanup") {
+          const it = items.find((i) => i.id === j.itemId);
+          const p = chosen[0];
+          if (it && p) {
+            const id = crypto.randomUUID();
+            const path = `${userId}/${id}.${p.ext}`;
+            const tpath = `${userId}/${id}_t.${p.ext}`;
+            await upload(path, p.main);
+            await upload(tpath, p.thumb);
+            const tags = it.tag_status === "done" || it.tag_status === "manual" || !p.tags ? {} : tagPatch(p);
+            const patch = { image_path: path, thumb_path: tpath, source_path: it.source_path ?? it.image_path, image_kind: "cutout" as const, ...tags };
+            const { error } = await supabase.from("om_wardrobe_items").update(patch).eq("id", it.id);
+            if (error) {
+              await supabase.storage.from(BUCKET).remove([path, tpath]);
+              throw new Error(error.message);
+            }
+            // Old full photo is kept as the original; its thumbnail is no longer needed.
+            if (it.thumb_path && it.thumb_path !== it.image_path) await supabase.storage.from(BUCKET).remove([it.thumb_path]);
+            const { data: signed } = await supabase.storage.from(BUCKET).createSignedUrls([path, tpath], 3600);
+            setItems((s) => s.map((x) => (x.id === it.id ? { ...x, ...patch, image_url: signed?.[0]?.signedUrl, thumb_url: signed?.[1]?.signedUrl } : x)));
+          }
+        } else if (chosen.length) {
+          const take = chosen.slice(0, Math.max(0, room));
+          skipped += chosen.length - take.length;
+          if (take.length) {
+            // The original photo is stored once and shared by every piece cut from it.
+            let source: string | null = null;
+            if (j.source && take.some((p) => p.kind !== "photo")) {
+              source = `${userId}/${crypto.randomUUID()}_src.${j.source.ext}`;
+              await upload(source, j.source.main);
+            }
+            for (const p of take) {
+              const id = crypto.randomUUID();
+              const path = `${userId}/${id}.${p.ext}`;
+              const tpath = `${userId}/${id}_t.${p.ext}`;
+              await upload(path, p.main);
+              await upload(tpath, p.thumb);
+              const row = {
+                id,
+                user_id: userId,
+                image_path: path,
+                thumb_path: tpath,
+                source_path: p.kind === "photo" ? null : source,
+                image_kind: p.kind === "cutout" ? "cutout" : "photo",
+                ...(p.tags ? tagPatch(p) : { name: j.name.replace(/\.[^.]+$/, "").slice(0, 60), tag_status: aiReady ? "pending" : "manual" }),
+              };
+              const { data, error } = await supabase.from("om_wardrobe_items").insert(row).select("*").single();
+              if (error) {
+                await supabase.storage.from(BUCKET).remove([path, tpath]);
+                throw new Error(error.message.includes("wardrobe_full") ? "Wardrobe is full" : error.message);
+              }
+              const { data: signed } = await supabase.storage.from(BUCKET).createSignedUrls([path, tpath], 3600);
+              created.push({ ...(data as WardrobeItem), image_url: signed?.[0]?.signedUrl, thumb_url: signed?.[1]?.signedUrl });
+              if (!p.tags && aiReady) untagged.push(id);
+              room--;
+            }
+          }
+        }
+        done.push(j.key);
+      } catch (e) {
+        failed++;
+        patchJob(j.key, { error: e instanceof Error ? e.message : "Save failed" });
+      }
+    }
+    if (created.length) setItems((s) => [...created.reverse(), ...s]);
+    dropJobs(done);
+    setSaving(false);
+    if (skipped) setBanner(`Your wardrobe is full (${WARDROBE_CAP} items), so ${skipped} piece${skipped === 1 ? " wasn't" : "s weren't"} saved.`);
+    else if (failed) setBanner("Some pieces couldn't be saved. Check your connection and try again.");
+    if (untagged.length) await tag(untagged);
   }
 
   async function remove(item: WardrobeItem) {
@@ -130,6 +289,11 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
     setEditing(null);
     await supabase.from("om_wardrobe_items").delete().eq("id", item.id);
     const paths = [item.image_path, item.thumb_path].filter(Boolean) as string[];
+    // The original photo can be shared by several pieces: delete it only with the last one.
+    if (item.source_path) {
+      const { count } = await supabase.from("om_wardrobe_items").select("id", { count: "exact", head: true }).eq("source_path", item.source_path);
+      if (!count) paths.push(item.source_path);
+    }
     if (paths.length) await supabase.storage.from(BUCKET).remove(paths);
   }
 
@@ -179,31 +343,23 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
         <span className="paper-blue h-16 w-16 rounded-2xl grid place-items-center text-ivory shrink-0"><ImagePlus size={26} /></span>
         <span className="text-center sm:text-left flex-1">
           <span className="block text-lg font-semibold text-blue">Add photos</span>
-          <span className="block text-sm text-muted">Select many at once. Up to 10 MB each; we shrink them to ~150 KB and strip location data.</span>
+          <span className="block text-sm text-muted">One item or a whole outfit per photo: we find each piece and cut it out onto white. Up to 10 MB each; location data is stripped.</span>
         </span>
         <span className="rounded-full bg-coral text-blue-ink font-semibold px-6 h-11 inline-flex items-center">Choose photos</span>
-        <input ref={inputRef} type="file" accept="image/*" multiple className="sr-only" onChange={(e) => { if (e.target.files) handleFiles(e.target.files); e.target.value = ""; }} />
+        <input ref={inputRef} type="file" accept="image/*" multiple className="sr-only" onClick={() => warmCutter()} onChange={(e) => { if (e.target.files) handleFiles(e.target.files); e.target.value = ""; }} />
       </label>
 
-      {/* Upload queue */}
-      <AnimatePresence>
-        {uploads.length > 0 && (
-          <m.ul initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mt-4 space-y-2">
-            {uploads.map((u) => (
-              <li key={u.key} className="flex items-center gap-3 text-sm">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                {u.preview && <img decoding="async" src={u.preview} alt="" className="h-10 w-10 rounded-lg object-cover" />}
-                <span className="flex-1 truncate">{u.name}</span>
-                {u.status === "error" ? (
-                  <span className="text-coral-deep flex items-center gap-2">{u.error}<button onClick={() => setUploads((x) => x.filter((y) => y.key !== u.key))} aria-label="Dismiss"><X size={14} /></button></span>
-                ) : (
-                  <span className="flex items-center gap-3 text-muted">{u.status === "compressing" ? "Compressing" : "Uploading"}<ShimmerLine className="w-16" /></span>
-                )}
-              </li>
-            ))}
-          </m.ul>
-        )}
-      </AnimatePresence>
+      {jobs.length > 0 && (
+        <PieceReview
+          jobs={jobs}
+          model={model}
+          saving={saving}
+          onToggle={togglePiece}
+          onDismissJob={(k) => dropJobs([k])}
+          onDiscard={() => dropJobs(jobs.filter((j) => j.stage === "ready" || j.stage === "error").map((j) => j.key))}
+          onSave={saveReviewed}
+        />
+      )}
 
       {/* Filters */}
       {items.length > 0 && (
@@ -214,14 +370,19 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
             value={[filter]}
             onChange={(v) => setFilter(v[0] ?? "all")}
           />
-          {failed.length > 0 && aiReady && (
-            <button onClick={() => tag(failed)} className="nav-label text-blue inline-flex items-center gap-1.5 hover:text-coral-deep"><RefreshCw size={14} /> Retry tagging {failed.length}</button>
-          )}
+          <div className="flex flex-wrap items-center gap-4">
+            {failed.length > 0 && aiReady && (
+              <button onClick={() => tag(failed)} className="nav-label text-blue inline-flex items-center gap-1.5 hover:text-coral-deep"><RefreshCw size={14} /> Retry tagging {failed.length}</button>
+            )}
+            {legacy.length > 0 && aiReady && (
+              <button onClick={cleanUp} className="nav-label text-blue inline-flex items-center gap-1.5 h-11 hover:text-coral-deep"><Wand2 size={14} /> Clean up photos {legacy.length}</button>
+            )}
+          </div>
         </div>
       )}
 
       {/* Grid */}
-      {items.length === 0 && uploads.length === 0 ? (
+      {items.length === 0 && jobs.length === 0 ? (
         <div className="mt-14 text-center max-w-md mx-auto">
           <p className="display-condensed text-blue text-4xl">Empty closet, for now</p>
           <p className="mt-3 text-muted">Start with ten pieces you wear most: two tops, two bottoms, shoes, a watch or earrings, a bag. You can still get general outfit ideas meanwhile.</p>
@@ -233,7 +394,7 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
             {shown.map((item) => (
               <m.li key={item.id} initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}>
                 <button onClick={() => setEditing(item)} className="group block w-full text-left transition-transform duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] active:scale-[0.97] touch-manipulation">
-                  <div className="relative aspect-[4/5] overflow-hidden rounded-2xl bg-paper border border-blue/10">
+                  <div className={`relative aspect-[4/5] overflow-hidden rounded-2xl border border-blue/10 ${item.image_kind === "cutout" ? "bg-white" : "bg-paper"}`}>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     {item.thumb_url && <img src={item.thumb_url} alt={item.name ?? "Wardrobe item"} loading="lazy" decoding="async" width={300} height={375} className="h-full w-full object-cover transition-transform duration-500 ease-[var(--ease-out-expo)] group-hover:scale-[1.04]" />}
                     {item.tag_status === "pending" && (
@@ -276,6 +437,14 @@ function EditSheet({ item, onClose, onSave, onDelete, onRetag }: { item: Wardrob
   const [confirm, setConfirm] = useState(false);
   // The grid only signs thumbnails; fetch the full-size photo when the sheet opens.
   const [full, setFull] = useState<string | null>(item.image_url ?? null);
+  const [orig, setOrig] = useState<string | null>(null);
+  const [showOrig, setShowOrig] = useState(false);
+  useEffect(() => {
+    if (!showOrig || orig || !item.source_path) return;
+    let live = true;
+    createClient().storage.from(BUCKET).createSignedUrl(item.source_path, 3600).then(({ data }) => live && data && setOrig(data.signedUrl));
+    return () => { live = false; };
+  }, [showOrig, orig, item.source_path]);
   useEffect(() => {
     if (full || !item.image_path) return;
     let live = true;
@@ -302,7 +471,10 @@ function EditSheet({ item, onClose, onSave, onDelete, onRetag }: { item: Wardrob
           <button onClick={onClose} aria-label="Close" className="h-10 w-10 grid place-items-center rounded-full hover:bg-blue/10"><X size={20} /></button>
         </div>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        {(full || item.thumb_url) && <img decoding="async" src={full ?? item.thumb_url ?? ""} alt="" className="mt-4 w-full max-h-72 object-contain rounded-2xl bg-paper" />}
+        {(full || item.thumb_url) && <img decoding="async" src={(showOrig && orig) || full || item.thumb_url || ""} alt="" className={`mt-4 w-full max-h-72 object-contain rounded-2xl ${item.image_kind === "cutout" && !showOrig ? "bg-white" : "bg-paper"}`} />}
+        {item.source_path && (
+          <button onClick={() => setShowOrig((v) => !v)} className="mt-2 nav-label text-blue h-9 px-1 hover:text-coral-deep">{showOrig ? "Show cutout" : "View original photo"}</button>
+        )}
         <div className="mt-5 space-y-4">
           <label className="block text-sm text-muted">Name<input className="field mt-1" value={d.name ?? ""} onChange={(e) => set("name", e.target.value)} /></label>
           <div>

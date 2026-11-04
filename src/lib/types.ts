@@ -41,6 +41,8 @@ export type WardrobeItem = {
   styles: string[];
   notes: string | null;
   tag_status: "pending" | "done" | "failed" | "manual";
+  source_path?: string | null; // original photo (cutouts); may be shared by pieces cut from one photo
+  image_kind?: "photo" | "cutout";
   created_at: string;
   image_url?: string | null;
   thumb_url?: string | null;
