@@ -25,6 +25,10 @@ export async function callGemini(opts: {
   schema?: unknown;
   temperature?: number;
   imageOut?: boolean;
+  /** Per-request timeout (ms). Gemini sometimes accepts a request and never answers. */
+  attemptMs?: number;
+  /** Cap on the whole fallback chain (ms), so the route answers before its maxDuration. */
+  deadlineMs?: number;
 }): Promise<{ text: string; images: { mime: string; data: string }[] }> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new GeminiError("AI key not configured", 503);
@@ -41,14 +45,30 @@ export async function callGemini(opts: {
   const first = opts.model ?? TEXT_MODEL;
   const chain = Array.from(new Set([first, ...(opts.imageOut ? IMAGE_FALLBACKS : TEXT_FALLBACKS)]));
   let lastErr = "";
-  for (const model of chain) {
+  const attemptMs = opts.attemptMs ?? 50_000;
+  const deadline = Date.now() + (opts.deadlineMs ?? 100_000);
+  outer: for (const model of chain) {
     let notFound = false;
     for (let attempt = 0; attempt < 2; attempt++) {
-      const r = await fetch(`${API}/${model}:generateContent`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        body: JSON.stringify(body),
-      });
+      const left = deadline - Date.now();
+      if (left < 2_000) {
+        lastErr ||= "deadline";
+        break outer;
+      }
+      let r: Response;
+      try {
+        r = await fetch(`${API}/${model}:generateContent`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(Math.min(attemptMs, left)),
+        });
+      } catch (e) {
+        // timeout / network: treat like an overloaded model and move on
+        lastErr = `${model} ${e instanceof Error ? e.name : "fetch failed"}`;
+        notFound = true;
+        break;
+      }
       if (r.ok) {
         const j = await r.json();
         const parts = j.candidates?.[0]?.content?.parts ?? [];
@@ -70,7 +90,7 @@ export async function callGemini(opts: {
       }
       if (r.status !== 429 && r.status < 500) break;
       notFound = true; // overloaded/rate-limited: after the retry, move on to the next model
-      if (attempt === 0) await new Promise((res) => setTimeout(res, 800));
+      if (attempt === 0) await new Promise((res) => setTimeout(res, 600));
     }
     if (!notFound) break;
   }

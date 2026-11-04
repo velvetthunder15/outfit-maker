@@ -4,7 +4,7 @@ import Link from "next/link";
 import { AnimatePresence, m } from "motion/react";
 import { ImagePlus, Trash2, X, RefreshCw, Sparkles, AlertCircle, Wand2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { processPhoto, warmCutter, type Piece } from "@/lib/cutout/client";
+import { processPhoto, warmCutter, resetCutter, type Piece } from "@/lib/cutout/client";
 import { PieceReview, type Job } from "./piece-review";
 import { BUCKET, WARDROBE_CAP } from "@/lib/storage";
 import { CATEGORIES, FORMALITY, SEASONS, type WardrobeItem } from "@/lib/types";
@@ -46,6 +46,7 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
   const [model, setModel] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const queue = useRef<Promise<void>>(Promise.resolve());
+  const retryable = useRef(new Map<string, { input: () => Promise<File | Blob>; hint?: { name?: string | null; category?: string | null } }>());
   const [filter, setFilter] = useState<string>("all");
   const [editing, setEditing] = useState<WardrobeItem | null>(null);
   const [banner, setBanner] = useState<string | null>(aiReady ? null : "AI tagging isn't switched on yet. Photos still save; you can tag items by hand.");
@@ -106,13 +107,28 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
 
   /** Photos are processed one at a time (memory on phones); detection + embedding overlap inside each. */
   function enqueue(job: Job, input: () => Promise<File | Blob>, hint?: { name?: string | null; category?: string | null }) {
+    retryable.current.set(job.key, { input, hint });
     queue.current = queue.current.then(async () => {
+      let live = true;
+      let hard: ReturnType<typeof setTimeout> | null = null;
       try {
-        const res = await processPhoto(await input(), {
-          hint,
-          onStage: (stage, frac) => patchJob(job.key, { stage, frac }),
-          onModel: (f) => setModel(f),
+        // processPhoto has its own stall watchdog; this hard cap is the last line of defence so one
+        // photo can never hold up the rest of the queue.
+        const capped = new Promise<never>((_, rej) => {
+          hard = setTimeout(() => {
+            resetCutter();
+            rej(new Error("This photo got stuck. Tap Retry."));
+          }, 240_000);
         });
+        const res = await Promise.race([
+          (async () =>
+            processPhoto(await input(), {
+              hint,
+              onStage: (stage, frac) => live && patchJob(job.key, { stage, frac }),
+              onModel: (f) => live && setModel(f),
+            }))(),
+          capped,
+        ]);
         let pieces = res.pieces;
         let note = res.note;
         if (job.mode === "cleanup") {
@@ -123,8 +139,21 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
         patchJob(job.key, { stage: pieces.length ? "ready" : "error", frac: 1, pieces, source: res.source, note, error: pieces.length ? undefined : note });
       } catch (e) {
         patchJob(job.key, { stage: "error", error: e instanceof Error ? e.message : "Couldn't process this photo" });
+      } finally {
+        live = false;
+        if (hard) clearTimeout(hard);
       }
     });
+  }
+
+  function retryJob(key: string) {
+    const r = retryable.current.get(key);
+    const j = jobs.find((x) => x.key === key);
+    if (!r || !j) return;
+    j.pieces.forEach((p) => URL.revokeObjectURL(p.preview));
+    const fresh: Job = { ...j, stage: "queued", frac: 0, pieces: [], note: undefined, error: undefined, source: undefined };
+    patchJob(key, fresh);
+    enqueue(fresh, r.input, r.hint);
   }
 
   function handleFiles(files: FileList | File[]) {
@@ -188,6 +217,7 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
     setJobs((js) => {
       js.filter((j) => keys.includes(j.key)).forEach((j) => {
         if (j.preview.startsWith("blob:")) URL.revokeObjectURL(j.preview);
+        retryable.current.delete(j.key);
         j.pieces.forEach((p) => URL.revokeObjectURL(p.preview));
       });
       return js.filter((j) => !keys.includes(j.key));
@@ -356,6 +386,7 @@ export function WardrobeClient({ userId, initialItems, welcome, aiReady }: { use
           saving={saving}
           onToggle={togglePiece}
           onDismissJob={(k) => dropJobs([k])}
+          onRetryJob={retryJob}
           onDiscard={() => dropJobs(jobs.filter((j) => j.stage === "ready" || j.stage === "error").map((j) => j.key))}
           onSave={saveReviewed}
         />

@@ -50,6 +50,9 @@ export async function POST(req: Request) {
       system: DETECT_SYSTEM,
       temperature: 0.2,
       schema: DETECT_SCHEMA,
+      // The phone waits on this: 15 s per model try, 40 s for the whole chain, then a clean 502.
+      attemptMs: 15_000,
+      deadlineMs: 40_000,
       parts: [{ inline_data: { mime_type: mime, data: body.image } }, { text: ask }],
     });
     const raw = parseJson<{ items?: Raw[] }>(text).items ?? [];

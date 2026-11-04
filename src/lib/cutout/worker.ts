@@ -18,6 +18,28 @@ type T = any;
 let lib: Promise<{ T: T; model: T; processor: T }> | null = null;
 const embeds = new Map<string, { emb: T; W: number; H: number; orig: number[][]; resized: number[][] }>();
 
+/** Free tensors now: onnxruntime-web keeps their data in the WASM heap until disposed. */
+function dispose(...xs: unknown[]) {
+  for (const x of xs) {
+    if (!x || typeof x !== "object") continue;
+    if (typeof (x as { dispose?: unknown }).dispose === "function") {
+      try {
+        (x as { dispose: () => void }).dispose();
+      } catch {
+        /* already freed */
+      }
+    } else if (!Array.isArray(x) && !ArrayBuffer.isView(x)) {
+      for (const v of Object.values(x as Record<string, unknown>)) if (v && typeof (v as { dispose?: unknown }).dispose === "function") dispose(v);
+    }
+  }
+}
+
+function drop(job: string) {
+  const e = embeds.get(job);
+  if (e) dispose(e.emb);
+  embeds.delete(job);
+}
+
 function post(msg: unknown, transfer: Transferable[] = []) {
   (self as unknown as DedicatedWorkerGlobalScope).postMessage(msg, transfer);
 }
@@ -51,10 +73,15 @@ async function embed(job: string, data: ArrayBuffer, W: number, H: number) {
   const image = new T.RawImage(new Uint8ClampedArray(data), W, H, 4);
   const t0 = performance.now();
   const inputs = await processor(image);
-  const emb = await model.get_image_embeddings(inputs);
+  let emb: T;
+  try {
+    emb = await model.get_image_embeddings(inputs);
+  } finally {
+    dispose(inputs.pixel_values);
+  }
   console.debug(`[cutout] embed ${W}x${H} ${Math.round(performance.now() - t0)} ms`);
-  // Only keep the two most recent photos' embeddings around (memory on phones).
-  while (embeds.size >= 2) embeds.delete(embeds.keys().next().value as string);
+  // Only keep the most recent photo's embedding (memory on phones); older ones are freed.
+  for (const k of Array.from(embeds.keys())) drop(k);
   embeds.set(job, { emb, W, H, orig: inputs.original_sizes, resized: inputs.reshaped_input_sizes });
 }
 
@@ -76,11 +103,19 @@ async function cut(job: string, items: { key: string; boxes: Box[] }[]) {
         // Scale the box into the model's 1024x1024 input space (no need to re-run image preprocessing).
         const input_boxes = ip.reshape_input_points([[[px.x0, px.y0, px.x1, px.y1]]], orig, resized, true);
         const out = await model({ ...emb, input_boxes });
-        const masks = await processor.post_process_masks(out.pred_masks, orig, resized, { binarize: false });
-        const cand = masks[0].data as Float32Array;
-        const n = masks[0].dims[1] ?? 3;
-        const pick = pickMask(cand, out.iou_scores.data, n, W, H, px);
-        if (pick.index >= 0) any += refineInto(union, cand, pick.index, W, H, px);
+        let masks: T = null;
+        try {
+          masks = await processor.post_process_masks(out.pred_masks, orig, resized, { binarize: false });
+          const cand = masks[0].data as Float32Array;
+          const n = masks[0].dims[1] ?? 3;
+          const pick = pickMask(cand, out.iou_scores.data, n, W, H, px);
+          if (pick.index >= 0) any += refineInto(union, cand, pick.index, W, H, px);
+        } finally {
+          // never free the cached embedding tensors, even if the model echoes them back
+          const keep = new Set(Object.values(emb));
+          dispose(...Object.values(out).filter((v) => !keep.has(v)), input_boxes);
+          if (masks) dispose(...masks);
+        }
       }
       // A cutout that is a speck of its box is a miss: let the client fall back to the photo.
       const boxArea = it.boxes.reduce((s, b) => { const p = toPx(b, W, H); return s + (p.x1 - p.x0) * (p.y1 - p.y0); }, 0);
@@ -108,7 +143,7 @@ async function handle(ev: MessageEvent) {
     if (m.type === "warm") await load();
     else if (m.type === "embed") await embed(m.job!, m.data!, m.W!, m.H!);
     else if (m.type === "cut") await cut(m.job!, m.items!);
-    else if (m.type === "drop") embeds.delete(m.job!);
+    else if (m.type === "drop") drop(m.job!);
     post({ type: "done", rid: m.rid });
   } catch (err) {
     post({ type: "done", rid: m.rid, error: err instanceof Error ? err.message : String(err) });

@@ -3,7 +3,7 @@
 //   photo -> (Gemini: items + tags + boxes) || (worker: EdgeTAM image embedding)
 //         -> worker: one mask per item -> here: composite on pure white, 4:5, centred -> WebP blobs.
 // Any failure degrades gracefully: no worker/model -> box crops; no detection -> the original photo.
-import { decode, decodeChecked, scaled, encode, compressDecoded, toBlob, type Src } from "@/lib/image";
+import { decode, decodeChecked, scaled, encode, compressDecoded, toBlob, release, ctx2d, type Src } from "@/lib/image";
 import { fitRect, type Box } from "./core";
 
 export type Detected = {
@@ -56,6 +56,8 @@ class Cutter {
   private pieceSinks = new Map<string, (m: PieceMsg) => void>();
   onProgress: ((frac: number) => void) | null = null;
   broken = false;
+  ready = false; // model loaded at least once (later embeds are a few seconds, not a download)
+  photos = 0; // photos embedded by this worker; it is recycled after a few to cap WASM heap growth
 
   constructor() {
     this.w = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
@@ -80,13 +82,30 @@ class Cutter {
   call(msg: Record<string, unknown>, transfer: Transferable[] = [], timeoutMs = 180_000) {
     const rid = ++this.rid;
     return new Promise<void>((res, rej) => {
+      if (this.broken) return rej(new Error("worker gone"));
       const t = setTimeout(() => {
         this.pending.delete(rid);
+        // A worker that stopped answering is stuck (OOM inside WASM, hung fetch): retire it.
+        this.terminate();
         rej(new Error("timeout"));
       }, timeoutMs);
       this.pending.set(rid, { res: () => (clearTimeout(t), res()), rej: (e) => (clearTimeout(t), rej(e)) });
       this.w.postMessage({ ...msg, rid }, transfer);
     });
+  }
+
+  terminate() {
+    if (this.broken) return;
+    this.broken = true;
+    try {
+      this.w.terminate();
+    } catch {
+      /* already gone */
+    }
+    this.pending.forEach((p) => p.rej(new Error("worker terminated")));
+    this.pending.clear();
+    this.pieceSinks.clear();
+    if (cutter === this) cutter = null;
   }
 
   async cut(job: string, items: { key: string; boxes: Box[] }[], onPiece?: (done: number) => void) {
@@ -96,7 +115,7 @@ class Cutter {
       onPiece?.(got.size);
     });
     try {
-      await this.call({ type: "cut", job, items }, [], 90_000);
+      await this.call({ type: "cut", job, items }, [], 30_000 + 8_000 * items.length);
     } finally {
       this.pieceSinks.delete(job);
     }
@@ -113,9 +132,16 @@ export function cutoutSupported() {
   return !(mem && mem < 2);
 }
 
+const RECYCLE_AFTER = 8;
+
 function getCutter() {
   if (!cutoutSupported()) return null;
   if (cutter?.broken) cutter = null;
+  if (cutter && cutter.photos >= RECYCLE_AFTER && cutter.ready) {
+    // Fresh worker = fresh WASM heap (it only grows). The model comes from the browser cache.
+    cutter.terminate();
+    cutter = null;
+  }
   try {
     cutter ??= new Cutter();
   } catch {
@@ -126,7 +152,14 @@ function getCutter() {
 
 /** Start fetching the model early (e.g. when the file picker opens). Safe to call repeatedly. */
 export function warmCutter() {
-  getCutter()?.call({ type: "warm" }).catch(() => {});
+  const c = getCutter();
+  c?.call({ type: "warm" }).then(() => (c.ready = true), () => {});
+}
+
+/** Throw away the worker (e.g. after a job was abandoned by the watchdog). */
+export function resetCutter() {
+  cutter?.terminate();
+  cutter = null;
 }
 
 // ---------------- helpers ----------------
@@ -151,27 +184,29 @@ export function composeCard(hi: HTMLCanvasElement, W: number, H: number, rect: {
   const item = document.createElement("canvas");
   item.width = iw;
   item.height = ih;
-  const ic = item.getContext("2d")!;
+  const ic = ctx2d(item);
   ic.imageSmoothingQuality = "high";
   ic.drawImage(hi, r.x, r.y, r.w, r.h, 0, 0, iw, ih);
   if (alpha) {
     const m = document.createElement("canvas");
     m.width = rect.w;
     m.height = rect.h;
-    const mc = m.getContext("2d")!;
+    const mc = ctx2d(m);
     const img = mc.createImageData(rect.w, rect.h);
     for (let i = 0, j = 3; i < alpha.length; i++, j += 4) img.data[j] = alpha[i];
     mc.putImageData(img, 0, 0);
     ic.globalCompositeOperation = "destination-in";
     ic.drawImage(m, 0, 0, iw, ih); // bilinear upscale of the feathered mask = smooth edges
+    release(m);
   }
   const out = document.createElement("canvas");
   out.width = CARD_W;
   out.height = CARD_H;
-  const oc = out.getContext("2d")!;
+  const oc = ctx2d(out);
   oc.fillStyle = "#ffffff";
   oc.fillRect(0, 0, CARD_W, CARD_H);
   oc.drawImage(item, Math.round(f.x), Math.round(f.y));
+  release(item);
   return out;
 }
 
@@ -180,10 +215,10 @@ async function cardBlobs(card: HTMLCanvasElement) {
   const t = document.createElement("canvas");
   t.width = THUMB_W;
   t.height = THUMB_H;
-  const tc = t.getContext("2d")!;
+  const tc = ctx2d(t);
   tc.imageSmoothingQuality = "high";
   tc.drawImage(card, 0, 0, THUMB_W, THUMB_H);
-  const thumb = await encode(t, 30 * 1024, 0.78);
+  const thumb = await encode(t, 30 * 1024, 0.78).finally(() => release(t));
   return { main, thumb, ext: (main.type === "image/webp" ? "webp" : "jpg") as "webp" | "jpg" };
 }
 
@@ -225,107 +260,194 @@ function creeper(report: (s: Stage, f: number) => void) {
 }
 
 // ---------------- the pipeline ----------------
+type Opts = {
+  hint?: { name?: string | null; category?: string | null };
+  onStage?: (s: Stage, frac: number) => void;
+  onModel?: (frac: number) => void;
+  /** Override for tests (and the detect endpoint is the only network call in a job). */
+  detect?: (body: { image: string; mime: string; hint?: { name?: string; category?: string } }, signal: AbortSignal) => Promise<Response>;
+};
+
+/** A job that makes no real progress for this long is abandoned so the queue moves on. */
+export const STALL_MS = 75_000;
+const DETECT_TIMEOUT_MS = 45_000; // server caps its own Gemini chain at ~40 s
+
+export class StalledError extends Error {
+  constructor() {
+    super("This photo got stuck. Tap Retry.");
+    this.name = "StalledError";
+  }
+}
+
 /**
  * Process one photo into wardrobe pieces. `hint` = an existing item being cleaned up (single item).
  * onStage drives the progress UI; onModel reports first-run model download (0-1).
+ * Never hangs: a watchdog rejects with StalledError after STALL_MS without a real milestone.
  */
-export async function processPhoto(
-  input: File | Blob,
-  opts: { hint?: { name?: string | null; category?: string | null }; onStage?: (s: Stage, frac: number) => void; onModel?: (frac: number) => void } = {}
-): Promise<Processed> {
+export async function processPhoto(input: File | Blob, opts: Opts = {}): Promise<Processed> {
   const prog = creeper(opts.onStage ?? (() => {}));
+  const abort = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let fail: (e: Error) => void = () => {};
+  const stalled = new Promise<never>((_, rej) => (fail = rej));
+  const alive = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      abort.abort();
+      // Whatever hung may be inside the worker: start the next photo with a fresh one.
+      resetCutter();
+      fail(new StalledError());
+    }, STALL_MS);
+  };
+  alive();
+  const work = run(input, opts, prog, alive, abort.signal);
+  work.catch(() => {}); // if the watchdog won, the late result/error is dropped
   try {
-    return await run(input, opts, prog);
+    return await Promise.race([work, stalled]);
   } finally {
+    if (timer) clearTimeout(timer);
     prog.stop();
   }
 }
 
-async function run(
-  input: File | Blob,
-  opts: { hint?: { name?: string | null; category?: string | null }; onModel?: (frac: number) => void },
-  prog: ReturnType<typeof creeper>
-): Promise<Processed> {
+async function detectOnce(body: Parameters<NonNullable<Opts["detect"]>>[0], outer: AbortSignal, impl?: Opts["detect"]) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), DETECT_TIMEOUT_MS);
+  const onOuter = () => ac.abort();
+  outer.addEventListener("abort", onOuter);
+  try {
+    if (impl) return await impl(body, ac.signal);
+    return await fetch("/api/wardrobe/detect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ac.signal });
+  } finally {
+    clearTimeout(t);
+    outer.removeEventListener("abort", onOuter);
+  }
+}
+
+async function run(input: File | Blob, opts: Opts, prog: ReturnType<typeof creeper>, alive: () => void, signal: AbortSignal): Promise<Processed> {
   prog.to("reading", 0.02, 0.1);
   const src: Src = input instanceof File ? await decodeChecked(input) : await decode(input);
-  const hi = scaled(src, 2048);
-  const work = scaled(src, 1024);
-  if ("close" in src) src.close();
-  const W = work.width, H = work.height;
-  const source = await compressDecoded(work);
-  const photoPiece = (note?: string): Processed => ({
-    pieces: [{ key: crypto.randomUUID(), tags: null, main: source.main, thumb: source.thumb, ext: source.ext as "webp" | "jpg", preview: URL.createObjectURL(source.thumb), kind: "photo", selected: true }],
-    source: { main: source.main, ext: source.ext as "webp" | "jpg" },
-    note,
-  });
-
-  // Detection (server, Gemini) and the image embedding (worker) run at the same time.
-  prog.to("finding", 0.12, 0.5);
+  let hi: HTMLCanvasElement | null = null;
+  let work: HTMLCanvasElement | null = null;
   const job = crypto.randomUUID();
-  const c = getCutter();
-  if (c) c.onProgress = (f) => opts.onModel?.(f);
-  const embedP: Promise<boolean> = c
-    ? (() => {
-        const data = work.getContext("2d")!.getImageData(0, 0, W, H).data;
-        return c.call({ type: "embed", job, data: data.buffer, W, H }, [data.buffer]).then(() => true, () => false);
-      })()
-    : Promise.resolve(false);
-
-  let items: Detected[] = [];
+  let c: Cutter | null = null;
   try {
-    const jpeg = (await toBlob(work, "image/jpeg", 0.82))!;
-    const r = await fetch("/api/wardrobe/detect", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image: await toBase64(jpeg), mime: "image/jpeg", hint: opts.hint ? { name: opts.hint.name ?? undefined, category: opts.hint.category ?? undefined } : undefined }),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      c?.call({ type: "drop", job }).catch(() => {});
-      return photoPiece(`${j.error ?? "Couldn't find the pieces"}. Keeping the photo as it is.`);
-    }
-    items = j.items ?? [];
-  } catch {
-    c?.call({ type: "drop", job }).catch(() => {});
-    return photoPiece("You seem to be offline. Keeping the photo as it is.");
-  }
-  if (!items.length) {
-    c?.call({ type: "drop", job }).catch(() => {});
-    return photoPiece("No clothing or accessories found in this photo.");
-  }
-
-  prog.to("cutting", 0.5, 0.58);
-  const keyed = items.map((t) => ({ key: crypto.randomUUID(), t }));
-  let masks = new Map<string, PieceMsg>();
-  if (c && (await embedP)) {
     try {
-      masks = await c.cut(
-        job,
-        keyed.map((k) => ({ key: k.key, boxes: k.t.boxes })),
-        (n) => prog.to("cutting", 0.5 + (0.32 * n) / keyed.length, 0.5 + (0.32 * Math.min(keyed.length, n + 1)) / keyed.length)
-      );
-    } catch {
-      /* fall through to box crops */
+      hi = scaled(src, 2048);
+      work = scaled(src, 1024);
+    } finally {
+      if ("close" in src) src.close();
     }
-    c.call({ type: "drop", job }).catch(() => {});
-  }
+    const W = work.width, H = work.height;
+    const source = await compressDecoded(work);
+    alive();
+    const photoPiece = (note?: string): Processed => ({
+      pieces: [{ key: crypto.randomUUID(), tags: null, main: source.main, thumb: source.thumb, ext: source.ext as "webp" | "jpg", preview: URL.createObjectURL(source.thumb), kind: "photo", selected: true }],
+      source: { main: source.main, ext: source.ext as "webp" | "jpg" },
+      note,
+    });
 
-  const pieces: Piece[] = [];
-  let fellBack = 0;
-  for (const [i, k] of keyed.entries()) {
-    const m = masks.get(k.key);
-    const ok = Boolean(m?.ok && m.alpha && m.rect);
-    if (!ok) fellBack++;
-    const card = ok ? composeCard(hi, m!.W ?? W, m!.H ?? H, m!.rect!, m!.alpha!) : composeCard(hi, W, H, boxUnion(k.t.boxes, W, H), null);
-    const b = await cardBlobs(card);
-    const low = ok && (m!.fill ?? 1) < (GARMENT.has(k.t.category) ? 0.33 : 0.15);
-    pieces.push({ key: k.key, tags: k.t, ...b, preview: URL.createObjectURL(b.thumb), kind: ok ? "cutout" : "crop", selected: !low, low });
-    prog.to("cutting", 0.82 + (0.17 * (i + 1)) / keyed.length, 0.82 + (0.17 * (i + 1)) / keyed.length);
+    // Detection (server, Gemini) and the image embedding (worker) run at the same time.
+    prog.to("finding", 0.12, 0.5);
+    c = getCutter();
+    if (c) {
+      c.onProgress = (f) => {
+        alive(); // model download is real progress
+        opts.onModel?.(f);
+      };
+    }
+    const cc = c;
+    const embedP: Promise<boolean> = cc
+      ? (() => {
+          const data = ctx2d(work).getImageData(0, 0, W, H).data;
+          cc.photos++;
+          return cc.call({ type: "embed", job, data: data.buffer, W, H }, [data.buffer], cc.ready ? 60_000 : 180_000).then(
+            () => ((cc.ready = true), true),
+            () => false
+          );
+        })()
+      : Promise.resolve(false);
+
+    const jpeg = await toBlob(work, "image/jpeg", 0.82);
+    // The work canvas is no longer needed (embedding got its own copy of the pixels).
+    release(work);
+    work = null;
+    let items: Detected[] = [];
+    let failNote: string | null = null;
+    if (!jpeg) failNote = "Couldn't read this photo on this device. Keeping the photo as it is.";
+    else {
+      const body = { image: await toBase64(jpeg), mime: "image/jpeg", hint: opts.hint ? { name: opts.hint.name ?? undefined, category: opts.hint.category ?? undefined } : undefined };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const t0 = Date.now();
+        try {
+          const r = await detectOnce(body, signal, opts.detect);
+          const j = await r.json().catch(() => ({}));
+          if (r.ok) {
+            items = j.items ?? [];
+            failNote = null;
+            break;
+          }
+          failNote = `${j.error ?? "Couldn't find the pieces"}. Keeping the photo as it is.`;
+          // Retry only gateway hiccups that failed fast; 4xx (quota, sign-in) won't change.
+          if (!(r.status >= 500 && Date.now() - t0 < 20_000)) break;
+        } catch {
+          if (signal.aborted) throw new StalledError();
+          const timedOut = Date.now() - t0 >= DETECT_TIMEOUT_MS - 500;
+          failNote = timedOut ? "Finding the pieces took too long. Keeping the photo as it is." : "You seem to be offline. Keeping the photo as it is.";
+          if (timedOut) break; // a second 45 s wait would stall the queue
+        }
+        alive();
+      }
+    }
+    alive();
+    if (failNote || !items.length) {
+      cc?.call({ type: "drop", job }).catch(() => {});
+      return photoPiece(failNote ?? "No clothing or accessories found in this photo.");
+    }
+
+    prog.to("cutting", 0.5, 0.58);
+    const keyed = items.map((t) => ({ key: crypto.randomUUID(), t }));
+    let masks = new Map<string, PieceMsg>();
+    if (cc && (await embedP)) {
+      alive();
+      try {
+        masks = await cc.cut(
+          job,
+          keyed.map((k) => ({ key: k.key, boxes: k.t.boxes })),
+          (n) => {
+            alive();
+            prog.to("cutting", 0.5 + (0.32 * n) / keyed.length, 0.5 + (0.32 * Math.min(keyed.length, n + 1)) / keyed.length);
+          }
+        );
+      } catch {
+        /* fall through to box crops */
+      }
+      cc.call({ type: "drop", job }).catch(() => {});
+    }
+    alive();
+    if (signal.aborted) throw new StalledError();
+
+    const pieces: Piece[] = [];
+    let fellBack = 0;
+    for (const [i, k] of keyed.entries()) {
+      const m = masks.get(k.key);
+      const ok = Boolean(m?.ok && m.alpha && m.rect);
+      if (!ok) fellBack++;
+      const card = ok ? composeCard(hi, m!.W ?? W, m!.H ?? H, m!.rect!, m!.alpha!) : composeCard(hi, W, H, boxUnion(k.t.boxes, W, H), null);
+      const b = await cardBlobs(card).finally(() => release(card));
+      const low = ok && (m!.fill ?? 1) < (GARMENT.has(k.t.category) ? 0.33 : 0.15);
+      pieces.push({ key: k.key, tags: k.t, ...b, preview: URL.createObjectURL(b.thumb), kind: ok ? "cutout" : "crop", selected: !low, low });
+      alive();
+      prog.to("cutting", 0.82 + (0.17 * (i + 1)) / keyed.length, 0.82 + (0.17 * (i + 1)) / keyed.length);
+    }
+    prog.to("ready", 1, 1);
+    return {
+      pieces,
+      source: { main: source.main, ext: source.ext as "webp" | "jpg" },
+      note: fellBack ? (fellBack === pieces.length ? "Cutouts aren't available on this device right now, so pieces are cropped from the photo." : "Some pieces couldn't be cut out cleanly and are cropped instead.") : undefined,
+    };
+  } finally {
+    release(hi, work);
+    if (c) c.onProgress = null;
   }
-  prog.to("ready", 1, 1);
-  return {
-    pieces,
-    source: { main: source.main, ext: source.ext as "webp" | "jpg" },
-    note: fellBack ? (fellBack === pieces.length ? "Cutouts aren't available on this device right now, so pieces are cropped from the photo." : "Some pieces couldn't be cut out cleanly and are cropped instead.") : undefined,
-  };
 }

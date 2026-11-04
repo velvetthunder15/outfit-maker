@@ -1,5 +1,5 @@
 "use client";
-import { Check, X, Scissors, ArrowRight } from "lucide-react";
+import { Check, X, Scissors, ArrowRight, RotateCw } from "lucide-react";
 import type { Piece, Stage } from "@/lib/cutout/client";
 import { MagneticButton } from "@/components/amicro/magnetic-button";
 import { ShimmerLine } from "@/components/amicro/shimmer-line";
@@ -33,6 +33,7 @@ export function PieceReview({
   model,
   onToggle,
   onDismissJob,
+  onRetryJob,
   onSave,
   onDiscard,
   saving,
@@ -41,6 +42,7 @@ export function PieceReview({
   model: number | null;
   onToggle: (job: string, piece: string) => void;
   onDismissJob: (job: string) => void;
+  onRetryJob?: (job: string) => void;
   onSave: () => void;
   onDiscard: () => void;
   saving: boolean;
@@ -96,6 +98,11 @@ export function PieceReview({
                   </div>
                 )}
               </div>
+              {j.stage === "error" && onRetryJob && (
+                <button onClick={() => onRetryJob(j.key)} disabled={saving} className="h-9 shrink-0 inline-flex items-center gap-1.5 rounded-full border border-blue/15 px-3 text-xs font-medium text-blue transition-transform duration-150 active:scale-95 motion-reduce:transition-none hover:bg-blue/10 disabled:opacity-40" aria-label={`Retry ${j.name}`}>
+                  <RotateCw size={13} /> Retry
+                </button>
+              )}
               {(j.stage === "ready" || j.stage === "error") && (
                 <button onClick={() => onDismissJob(j.key)} disabled={saving} className="h-9 w-9 grid place-items-center rounded-full text-muted hover:bg-blue/10 disabled:opacity-40" aria-label={`Remove ${j.name}`}>
                   <X size={15} />
