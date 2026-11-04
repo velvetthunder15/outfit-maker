@@ -83,3 +83,6 @@ Why carpoolr's project: the free Supabase org already had 2 active projects; Chi
 
 ## Gemini quota (2026-11-04)
 - Free-tier key hit daily 429 quota on 3.5/3.8/3.7-flash; 3.5-flash-lite still answered. gemini.ts now skips quota-exhausted models for 15 min. /api/health?gen=1 probes each model. Real fix: enable billing on the key (asked Chirag).
+
+## AI router (2026-11-04)
+- Text/vision chain in src/lib/gemini.ts: gemini-3.5/3.8/3.7-flash -> Groq qwen/qwen3.8-27b (GROQ_API_KEY) -> OpenRouter free vision (OPENROUTER_API_KEY; OPENROUTER_MODELS default nemotron-3.5-super-vl:free, gemma-4-31b-it:free) -> gemini-3.5-flash-lite. Quota-exhausted models skipped. Detection image is square white-padded client-side so all models agree on 0-1000 boxes; boxes unpadded in cutout/client.ts. Vault ids: Groq 3d53d926-67f0-4727-b36c-c74fbdf04e36, OpenRouter 8066f1bc-763a-40d9-aa17-efbb600ce880. Env set on Vercel via dashboard.
