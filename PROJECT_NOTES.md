@@ -1,6 +1,6 @@
 # Outfit Maker — project notes
 
-Last updated: 2026-11-04 03:45 IST (perf + mobile pass)
+Last updated: 2026-11-04 17:50 IST (white-background cutouts)
 
 ## Live / IDs
 | Thing | Value |
@@ -21,7 +21,7 @@ Why carpoolr's project: the free Supabase org already had 2 active projects; Chi
 - **No trigger on `auth.users`** (carpoolr already has `on_auth_user_created`). `om_profiles` rows are created lazily by the app (auth callback / getProfile upsert).
 - Auth config changes made: Google provider enabled (approved by Chirag); appended to `uri_allow_list`: `https://outfit-maker-gamma.vercel.app/**`, `https://outfit-maker-*-afterworld1.vercel.app/**`, `http://localhost:3000/**`. Site URL (`carpoolr://auth`), email provider and templates untouched.
 - Delete-my-data removes all om_* rows + photos but deliberately does NOT delete the auth user (it is shared with carpoolr).
-- Migration file: `supabase/migrations/0001_init.sql` (already applied).
+- Migration files: `supabase/migrations/0001_init.sql`, `0002_cutouts.sql` (both applied; 0002 applied 2026-11-04 via the Supabase Management API `database/query`, om_wardrobe_items only).
 
 ## Architecture
 - Next.js 15 App Router, TypeScript, Tailwind v4, `@supabase/ssr` (cookie sessions, PKCE). `src/middleware.ts` refreshes session and protects `/style /outfits /saved /wardrobe /settings /onboarding`.
@@ -46,6 +46,19 @@ Why carpoolr's project: the free Supabase org already had 2 active projects; Chi
 - QA tooling (sandbox, not in repo): system Chromium via apt + Playwright/Lighthouse in /tmp/qa; Chromium needs a local no-auth chaining proxy to reach the internet from the sandbox.
 - Copy cleanup: removed "Step N" kickers (landing, Style), outfit eyebrow (mood · place), "Colour story" sub-heading, landing reference caption; Saved cards show date · mood under the title.
 
+## Automatic cutouts (2026-11-04)
+- **Flow (wardrobe upload):** each photo -> `processPhoto()` (`src/lib/cutout/client.ts`): decode (EXIF orientation) -> 2048 px "hi" canvas + 1024 px "work" canvas -> in parallel: `POST /api/wardrobe/detect` (Gemini, work image as JPEG base64) and worker `embed` (EdgeTAM image embedding) -> worker `cut` (one mask per box) -> main thread `composeCard()` puts each piece centred on pure #FFFFFF 800x1000 (4:5, 8% padding, max 4x upscale; pixels from the hi canvas, mask feathered) -> WebP main <=150 KB + 300x375 thumb <=30 KB. Photos are processed one at a time (memory); the review panel (`piece-review.tsx`) shows each photo's pieces with tick boxes, then "Save N pieces" uploads and inserts rows **already tagged** (no second tagging call).
+- **Detection:** `/api/wardrobe/detect` = one Gemini call per photo, `DETECT_SYSTEM` + `DETECT_SCHEMA` in `gemini.ts`: items[] with the usual tags + `boxes` ([ymin,xmin,ymax,xmax] 0-1000, one box per physical piece, so a pair of shoes/earrings = 1 item with 2 boxes) + `worn`. Max 8 items/photo. Counts **1 `tag` quota per photo** (300/day) regardless of item count. `hint` {name, category} = single-item mode for Clean up. `gemini-3.5-flash-lite` added as the last text fallback (2026-11-04 all flash models returned 503 for a while; lite still answered). Gemini 3.x returns no segmentation masks (tested: `mask` empty), so masks come from EdgeTAM.
+- **Segmentation model:** EdgeTAM (Meta, Apache-2.0), ONNX `onnx-community/EdgeTAM-ONNX` (Apache-2.0), dtype vision_encoder fp32 (19.5 MB) + prompt_encoder_mask_decoder int8 (8.7 MB), box prompts, run by transformers.js 4.3.2 (Apache-2.0) on onnxruntime-web WASM in a module Web Worker (`src/lib/cutout/worker.ts`, 5.6 kB chunk; transformers.js imported at runtime from jsDelivr with `webpackIgnore`, so no npm dependency and nothing in page bundles). Model + ORT WASM (~40 MB total) download once on first cutout and are cached by the browser. The worker is created only when the file picker is opened/photos are added (`warmCutter()`).
+  - Rejected: SlimSAM-77/50 (Xenova ONNX decoder has no box input; corner points gave wrong/inverse masks), EdgeTAM int8 encoder (blocky masks), BiRefNet/BEN2 (MIT but 115-220 MB and whole-scene salient object, no per-item split), RMBG-1.4 (non-commercial), @imgly/background-removal (AGPL), ISNet-ONNX (tagged AGPL).
+- **Mask post-processing** (`src/lib/cutout/core.ts`, pure, also used by the Node QA script): pick the best of SAM's 3 candidates by box-fit IoU + model score - spill outside the box (the model's own score alone picked the bedsheet around a white tee); clip to box +4%; drop islands <4% of the largest; fill pin-holes; erode 1 px (kills background fringe) + 2 box blurs (~1.5 px feather). `fill` (mask area / box area) < 0.33 for garments (<0.15 others) = "check" label, unticked by default (e.g. a tee mostly covered by an open overshirt).
+- **Fallbacks:** worker/model/CDN unavailable or deviceMemory < 2 -> each detected item is a box crop on white (`kind: crop`, saved as `image_kind 'photo'`); detection fails (503/quota/offline) or finds nothing -> the original photo as one untagged piece (tagged afterwards by `/api/wardrobe/tag` if AI is on).
+- **Storage/DB:** migration 0002 adds `om_wardrobe_items.source_path` (original photo `<uid>/<uuid>_src.webp`, ~<=150 KB, stored once per photo and shared by all pieces cut from it) and `image_kind` ('photo' | 'cutout', default 'photo'). Deleting an item removes `source_path` only when no other item references it. Edit sheet has "View original photo". Delete-my-data already lists the whole `<uid>/` folder, so `_src` files go too.
+- **Clean up photos:** button in the wardrobe filter row when any item has `image_kind != 'cutout'`; reprocesses up to 20 at a time (1 quota each) in single-item mode, shows before -> after, "Replace N photos" uploads the cutout as image/thumb, keeps the old full photo as `source_path`, deletes the old thumb, fills tags only if the item was untagged. Only real cutouts are offered (crops are skipped).
+- **Perf (sandbox Chromium, 2 ARM cores, single-thread WASM, no COOP/COEP):** first photo incl. model download ~17-25 s; afterwards embed 2.7-3.6 s + ~0.35-0.4 s per box; with real Gemini detection (3-7 s) running in parallel, ~5-8 s per photo. 4x CPU throttle on the main thread: long tasks 50-275 ms during decode/compose (once per photo). Progress bar eases continuously (transform `scaleX`), stage labels Reading -> Finding pieces -> Cutting out. Not measured on a real Android phone.
+- **QA artefacts:** `/workspace/projects/35d546e8-089e-488d-a717-e9a66e2a7d51/work/qa-cutouts-2026-11-04/` (before-after-*.jpg sheets, cutouts/*.webp produced by the real worker in Chromium, fallback-crops/, review-panel-390/1280.png). Test photos incl. generated multi-item ones (flatlay, worn-outfit, jewellery-table) in `work/test-wardrobe/`.
+- QA method (not in repo): temporary unauthenticated harness pages + a token-gated Gemini proxy were deployed only to a CLI-created preview (deleted afterwards; the temporary Vercel protection-bypass secret was revoked). Never committed.
+
 ## Env vars (names only)
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_SITE_URL` (Vercel: set)
 - `GEMINI_API_KEY` (Vercel: set, Production + Preview)
@@ -64,4 +77,5 @@ Why carpoolr's project: the free Supabase org already had 2 active projects; Chi
 - Google consent screen shows "continue to tomkixjzyeaslofybxrw.supabase.co" (and the GCP project's app name/logo, "Heat Check" project). Cosmetic fix: Supabase custom domain (paid) or a dedicated GCP project/consent screen named "Outfit Maker".
 - Magic-link emails use carpoolr's existing email templates (unchanged by request); carpoolr's template may be OTP-code style rather than a link.
 - Virtual try-on (image model) not exercised live.
+- Cutouts: the signed-in upload -> review -> save path and Clean up were verified only through a harness with mocked detection + the real worker (no automated sign-in); the production DB had 0 wardrobe items on 2026-11-04, so Clean up has no real items to run on yet. Real-phone timing untested.
 - Mobile layout screenshot-verified at 360/390/430 px (2026-11-04), no horizontal overflow. Signed-in pages with real data still not exercised by automation.
