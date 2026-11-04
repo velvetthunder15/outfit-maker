@@ -368,7 +368,25 @@ async function run(input: File | Blob, opts: Opts, prog: ReturnType<typeof creep
         })()
       : Promise.resolve(false);
 
-    const jpeg = await toBlob(work, "image/jpeg", 0.82);
+    // Detection gets a SQUARE white-padded copy: every model (Gemini, Groq Qwen, OpenRouter) then agrees on
+    // what "0-1000" means for x and y. Boxes are mapped back to the unpadded photo below.
+    const S = Math.max(W, H), padX = (S - W) / 2, padY = (S - H) / 2;
+    const sq = document.createElement("canvas");
+    sq.width = S;
+    sq.height = S;
+    {
+      const sctx = ctx2d(sq);
+      sctx.fillStyle = "#ffffff";
+      sctx.fillRect(0, 0, S, S);
+      sctx.drawImage(work, padX, padY);
+    }
+    const jpeg = await toBlob(sq, "image/jpeg", 0.82);
+    release(sq);
+    const unpad = (b: Box): Box => {
+      const clamp = (v: number) => Math.max(0, Math.min(1000, Math.round(v)));
+      const [y0, x0, y1, x1] = b;
+      return [clamp(((y0 / 1000) * S - padY) / H * 1000), clamp(((x0 / 1000) * S - padX) / W * 1000), clamp(((y1 / 1000) * S - padY) / H * 1000), clamp(((x1 / 1000) * S - padX) / W * 1000)] as Box;
+    };
     // The work canvas is no longer needed (embedding got its own copy of the pixels).
     release(work);
     work = null;
@@ -383,7 +401,12 @@ async function run(input: File | Blob, opts: Opts, prog: ReturnType<typeof creep
           const r = await detectOnce(body, signal, opts.detect);
           const j = await r.json().catch(() => ({}));
           if (r.ok) {
-            items = j.items ?? [];
+            items = ((j.items ?? []) as Detected[])
+              .map((it) => ({
+                ...it,
+                boxes: (it.boxes ?? []).map(unpad).filter(([y0, x0, y1, x1]) => y1 - y0 >= 8 && x1 - x0 >= 8),
+              }))
+              .filter((it) => it.boxes.length);
             failNote = null;
             break;
           }

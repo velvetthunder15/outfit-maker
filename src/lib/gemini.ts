@@ -9,6 +9,58 @@ const TEXT_FALLBACKS = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.7-flas
 const IMAGE_FALLBACKS = ["gemini-3.1-flash-image", "gemini-2.5-flash-image"];
 
 const exhausted = new Map<string, number>();
+const GROQ_MODEL = `groq:${process.env.GROQ_MODEL || "qwen/qwen3.8-27b"}`;
+// OpenRouter free vision models (shared free pools: often rate-limited, so they come after Groq).
+const OPENROUTER_MODELS = (process.env.OPENROUTER_MODELS || "nvidia/nemotron-3.5-super-vl:free,google/gemma-4-31b-it:free")
+  .split(",")
+  .map((m) => `openrouter:${m.trim()}`)
+  .filter((m) => m.length > 11);
+const COMPAT = {
+  groq: { url: "https://api.groq.com/openai/v1/chat/completions", key: () => process.env.GROQ_API_KEY, jsonMode: true },
+  openrouter: { url: "https://openrouter.ai/api/v1/chat/completions", key: () => process.env.OPENROUTER_API_KEY, jsonMode: false },
+} as const;
+
+/** OpenAI-compatible call to Groq. Gemini parts -> chat content; Gemini schema is given as JSON in the system prompt. */
+async function callCompat(
+  provider: keyof typeof COMPAT,
+  model: string,
+  opts: { system?: string; parts: Part[]; schema?: unknown; temperature?: number },
+  timeoutMs: number
+): Promise<string> {
+  const content = opts.parts.map((p) =>
+    "text" in p
+      ? { type: "text", text: p.text }
+      : { type: "image_url", image_url: { url: `data:${p.inline_data.mime_type};base64,${p.inline_data.data}` } }
+  );
+  let system = opts.system ?? "";
+  if (opts.schema)
+    system +=
+      "\n\nReply with ONE JSON object only (no prose, no code fences) that matches this schema (OpenAPI-style, types in caps). Use every required key." +
+      " Any box is [ymin, xmin, ymax, xmax] as integers normalised to 0-1000 of the image height/width.\n" +
+      JSON.stringify(opts.schema);
+  const cfg = COMPAT[provider];
+  const r = await fetch(cfg.url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${cfg.key()}`,
+      ...(provider === "openrouter" ? { "HTTP-Referer": "https://outfit-maker-gamma.vercel.app", "X-Title": "Outfit Maker" } : {}),
+    },
+    body: JSON.stringify({
+      model,
+      temperature: opts.temperature ?? 0.8,
+      messages: [...(system ? [{ role: "system", content: system }] : []), { role: "user", content }],
+      ...(opts.schema && cfg.jsonMode ? { response_format: { type: "json_object" } } : {}),
+      max_completion_tokens: 4096,
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 200)}`);
+  const j = await r.json();
+  const text: string = j.choices?.[0]?.message?.content ?? "";
+  if (!text.trim()) throw new Error("empty reply");
+  return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+}
 
 export const geminiConfigured = () => Boolean(process.env.GEMINI_API_KEY);
 
@@ -45,7 +97,14 @@ export async function callGemini(opts: {
   };
   if (opts.system) body.systemInstruction = { parts: [{ text: opts.system }] };
   const first = opts.model ?? TEXT_MODEL;
-  const all = Array.from(new Set([first, ...(opts.imageOut ? IMAGE_FALLBACKS : TEXT_FALLBACKS)]));
+  let all = Array.from(new Set([first, ...(opts.imageOut ? IMAGE_FALLBACKS : TEXT_FALLBACKS)]));
+  // Groq (free tier, vision-capable Qwen) sits after the full Gemini Flash models and before flash-lite.
+  if (!opts.imageOut) {
+    const extra = [...(process.env.GROQ_API_KEY ? [GROQ_MODEL] : []), ...(process.env.OPENROUTER_API_KEY ? OPENROUTER_MODELS : [])];
+    const lite = all.indexOf("gemini-3.5-flash-lite");
+    const at = lite === -1 ? all.length : lite;
+    all = [...all.slice(0, at), ...extra, ...all.slice(at)];
+  }
   // Skip models whose quota Google said is used up (remembered per warm instance for 15 min), unless that would skip all.
   const now = Date.now();
   const live = all.filter((m) => (exhausted.get(m) ?? 0) < now);
@@ -55,6 +114,19 @@ export async function callGemini(opts: {
   const deadline = Date.now() + (opts.deadlineMs ?? 100_000);
   outer: for (const model of chain) {
     let notFound = false;
+    const prov = model.startsWith("groq:") ? "groq" : model.startsWith("openrouter:") ? "openrouter" : null;
+    if (prov) {
+      const left = deadline - Date.now();
+      if (left < 2_000) break;
+      try {
+        const text = await callCompat(prov, model.slice(prov.length + 1), opts, Math.min(attemptMs, left, prov === "groq" ? 20_000 : 30_000));
+        return { text, images: [] };
+      } catch (e) {
+        lastErr = `${model} ${e instanceof Error ? e.message : "failed"}`;
+        if (/\b429\b/.test(lastErr)) exhausted.set(model, Date.now() + 5 * 60_000);
+        continue;
+      }
+    }
     for (let attempt = 0; attempt < 2; attempt++) {
       const left = deadline - Date.now();
       if (left < 2_000) {
