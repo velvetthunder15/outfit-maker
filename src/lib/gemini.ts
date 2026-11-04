@@ -8,6 +8,8 @@ export const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-i
 const TEXT_FALLBACKS = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite"];
 const IMAGE_FALLBACKS = ["gemini-3.1-flash-image", "gemini-2.5-flash-image"];
 
+const exhausted = new Map<string, number>();
+
 export const geminiConfigured = () => Boolean(process.env.GEMINI_API_KEY);
 
 export class GeminiError extends Error {
@@ -43,7 +45,11 @@ export async function callGemini(opts: {
   };
   if (opts.system) body.systemInstruction = { parts: [{ text: opts.system }] };
   const first = opts.model ?? TEXT_MODEL;
-  const chain = Array.from(new Set([first, ...(opts.imageOut ? IMAGE_FALLBACKS : TEXT_FALLBACKS)]));
+  const all = Array.from(new Set([first, ...(opts.imageOut ? IMAGE_FALLBACKS : TEXT_FALLBACKS)]));
+  // Skip models whose quota Google said is used up (remembered per warm instance for 15 min), unless that would skip all.
+  const now = Date.now();
+  const live = all.filter((m) => (exhausted.get(m) ?? 0) < now);
+  const chain = live.length ? live : all;
   let lastErr = "";
   const attemptMs = opts.attemptMs ?? 50_000;
   const deadline = Date.now() + (opts.deadlineMs ?? 100_000);
@@ -85,6 +91,12 @@ export async function callGemini(opts: {
         continue;
       }
       if (r.status === 404) {
+        notFound = true;
+        break;
+      }
+      if (r.status === 429 && /quota/i.test(lastErr)) {
+        // quota used up for this model: don't retry it, go straight to the next one
+        exhausted.set(model, Date.now() + 15 * 60_000);
         notFound = true;
         break;
       }
