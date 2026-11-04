@@ -80,3 +80,6 @@ Why carpoolr's project: the free Supabase org already had 2 active projects; Chi
 - Virtual try-on (image model) not exercised live.
 - Cutouts: the signed-in upload -> review -> save path and Clean up were verified only through a harness with mocked detection + the real worker (no automated sign-in); the production DB had 0 wardrobe items on 2026-11-04, so Clean up has no real items to run on yet. Real-phone timing untested.
 - Mobile layout screenshot-verified at 360/390/430 px (2026-11-04), no horizontal overflow. Signed-in pages with real data still not exercised by automation.
+
+## Gemini quota (2026-11-04)
+- Free-tier key hit daily 429 quota on 3.5/3.8/3.7-flash; 3.5-flash-lite still answered. gemini.ts now skips quota-exhausted models for 15 min. /api/health?gen=1 probes each model. Real fix: enable billing on the key (asked Chirag).
