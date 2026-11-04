@@ -34,5 +34,28 @@ export async function GET(req: Request) {
     out.ai_key_valid = r.ok;
     if (!r.ok) out.ai_status = r.status;
   }
+  if (sp.get("gen") === "1" && process.env.GEMINI_API_KEY) {
+    // Tiny generation per model to see overload (503) vs rate limit (429). Reports status + short error reason only.
+    const models = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite"];
+    out.gen = await Promise.all(
+      models.map(async (m) => {
+        const t = performance.now();
+        try {
+          const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY! },
+            body: JSON.stringify({ contents: [{ parts: [{ text: "Reply with: ok" }] }], generationConfig: { maxOutputTokens: 5 } }),
+            cache: "no-store",
+            signal: AbortSignal.timeout(15000),
+          });
+          const txt = r.ok ? "" : (await r.text()).replace(/\s+/g, " ");
+          const msg = /"message": ?"([^"]{0,160})/.exec(txt)?.[1] ?? "";
+          return { model: m, status: r.status, ms: Math.round(performance.now() - t), msg };
+        } catch (e) {
+          return { model: m, status: 0, ms: Math.round(performance.now() - t), msg: String(e).slice(0, 80) };
+        }
+      })
+    );
+  }
   return NextResponse.json(out);
 }
