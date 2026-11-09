@@ -4,7 +4,7 @@ import { requireUser } from "@/lib/supabase/server";
 import { getProfile } from "@/lib/storage";
 import { getWeather } from "@/lib/weather";
 import {
-  callGemini, geminiConfigured, parseJson, OUTFIT_SCHEMA, STYLIST_SYSTEM, wardrobeRules, generalRules, GeminiError,
+  callGemini, geminiConfigured, parseJson, OUTFIT_SCHEMA, STYLIST_SYSTEM, wardrobeRules, generalRules, GeminiError, validateOutfitResponse,
 } from "@/lib/gemini";
 import { pinterestUrl } from "@/lib/pinterest";
 import type { OutfitResult, WardrobeItem } from "@/lib/types";
@@ -104,7 +104,7 @@ ${fbLines.join("\n") || "none yet"}
 ${mode === "wardrobe" ? wardrobeRules() + "\n\nWARDROBE ITEMS\n" + items.map(itemLine).join("\n") : generalRules()}`;
 
   try {
-    const { text } = await callGemini({ system: STYLIST_SYSTEM, parts: [{ text: prompt }], schema: OUTFIT_SCHEMA, temperature: 0.85 });
+    const { text } = await callGemini({ system: STYLIST_SYSTEM, parts: [{ text: prompt }], schema: OUTFIT_SCHEMA, temperature: 0.85, validateResponse: validateOutfitResponse });
     const result = parseJson<OutfitResult>(text);
 
     // Enforce: only the user's own item ids, no duplicates.

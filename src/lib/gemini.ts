@@ -95,6 +95,8 @@ export async function callGemini(opts: {
   schema?: unknown;
   temperature?: number;
   imageOut?: boolean;
+  /** Validate a reply before accepting it; throw to try the next model. */
+  validateResponse?: (text: string) => void;
   /** Per-request timeout (ms). Gemini sometimes accepts a request and never answers. */
   attemptMs?: number;
   /** Cap on the whole fallback chain (ms), so the route answers before its maxDuration. */
@@ -137,6 +139,7 @@ export async function callGemini(opts: {
       if (left < 2_000) break;
       try {
         const text = await callCompat(prov, model.slice(prov.length + 1), opts, Math.min(attemptMs, left, prov === "groq" ? 20_000 : 30_000));
+        opts.validateResponse?.(text);
         return { text, images: [] };
       } catch (e) {
         lastErr = `${model} ${e instanceof Error ? e.message : "failed"}`;
@@ -171,6 +174,15 @@ export async function callGemini(opts: {
         const images = parts
           .filter((p: { inlineData?: unknown }) => p.inlineData)
           .map((p: { inlineData: { mimeType: string; data: string } }) => ({ mime: p.inlineData.mimeType, data: p.inlineData.data }));
+        if (opts.validateResponse) {
+          try {
+            opts.validateResponse(text);
+          } catch {
+            lastErr = `${model} invalid response`;
+            notFound = true;
+            break;
+          }
+        }
         return { text, images };
       }
       lastErr = `${model} ${r.status} ${(await r.text()).slice(0, 300)}`;
@@ -296,6 +308,36 @@ export const OUTFIT_SCHEMA = S("OBJECT", {
     "alternatives", "missing_pieces", "weather_note", "pinterest_query", "reference_keywords",
   ],
 });
+
+/** Validate the OpenAPI subset used by the outfit schema without changing other AI calls. */
+type OutfitSchemaNode = {
+  type: string;
+  nullable?: boolean;
+  enum?: string[];
+  properties?: Record<string, OutfitSchemaNode>;
+  required?: string[];
+  items?: OutfitSchemaNode;
+};
+
+function matchesOutfitSchema(value: unknown, schema: OutfitSchemaNode): boolean {
+  if (value === null) return schema.nullable === true;
+  if (schema.type === "STRING") return typeof value === "string" && (!schema.enum || schema.enum.includes(value));
+  if (schema.type === "ARRAY") return Array.isArray(value) && !!schema.items && value.every((v) => matchesOutfitSchema(v, schema.items!));
+  if (schema.type === "OBJECT") {
+    if (typeof value !== "object" || Array.isArray(value)) return false;
+    const obj = value as Record<string, unknown>;
+    if (schema.required?.some((key) => !Object.prototype.hasOwnProperty.call(obj, key))) return false;
+    return Object.entries(schema.properties ?? {}).every(([key, child]) =>
+      !Object.prototype.hasOwnProperty.call(obj, key) || matchesOutfitSchema(obj[key], child));
+  }
+  return false;
+}
+
+/** Throws on malformed or structurally invalid outfit JSON. */
+export function validateOutfitResponse(text: string): void {
+  const value = parseJson<unknown>(text);
+  if (!matchesOutfitSchema(value, OUTFIT_SCHEMA as OutfitSchemaNode)) throw new Error("invalid outfit response");
+}
 
 // ---------- Prompts ----------
 export const TAGGER_SYSTEM = `You catalogue a person's wardrobe from photos. Look at the single garment, shoe, piece of jewellery or accessory in the photo and tag it precisely.
